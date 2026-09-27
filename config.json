@@ -1,0 +1,34 @@
+{
+  "pptx_path": "C:/Intel/luahnew/luah.pptx",
+  "location": {
+    "latitude": 32.06,
+    "longitude": 35.26,
+    "elevation": 720
+  },
+  "eretz_yisroel": true,
+  "timezone": "Asia/Jerusalem",
+  "clock_tick_seconds": 1.0,
+  "content_tick_seconds": 30.0,
+  "reload_poll_seconds": 5.0,
+  "uno_host": "localhost",
+  "uno_port": 2002,
+  "display_number": 1,
+  "auto_recover": false,
+  "mock_start_datetime": "2026-09-26T14:30:00",
+  "_mock_start_datetime": null,
+  "debug_slide_advance": false,
+  "clock_style": {
+    "hour_length_ratio": 0.5,
+    "minute_length_ratio": 0.85,
+    "second_length_ratio": 0.9,
+    "tail_length_ratio": 0.12,
+    "hour_width_mm": 2.5,
+    "minute_width_mm": 1.8,
+    "second_width_mm": 1.0,
+    "pivot_radius_mm": 2.0,
+    "hour_color": 0,
+    "minute_color": 0,
+    "second_color": 12582912,
+    "show_second_hand": true
+  }
+}

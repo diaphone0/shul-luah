@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "luah-signage"
+version = "0.1.0"
+description = "LibreOffice Impress (python-uno) digital signage app for zmanim, built on pyzmanim"
+requires-python = ">=3.10"
+dependencies = [
+    "tzdata; sys_platform == 'win32'",
+]
+
+# Note: this package also depends on `pyzmanim` (see ../pyzmanim-lib), which
+# must be installed separately (e.g. `pip install -e ../pyzmanim-lib`) since
+# it is not published to PyPI.
+#
+# Note: the `uno` module (for talking to LibreOffice) is NOT a pip package -
+# it ships inside a LibreOffice installation's `program` directory. See
+# luah_signage/uno_bridge.py for how it's located at runtime.
+
+[tool.setuptools.packages.find]
+include = ["luah_signage*"]
