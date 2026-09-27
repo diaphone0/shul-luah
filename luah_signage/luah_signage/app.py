@@ -6,6 +6,7 @@ Run with: python -m luah_signage.app
 """
 from __future__ import annotations
 
+import sys
 import time
 import traceback
 
@@ -25,6 +26,37 @@ from .watcher import FileChangeWatcher
 # so a persistent failure doesn't spin the CPU or spam retries too fast.
 _RECOVERY_BACKOFF_SECONDS = 5.0
 _MAX_RECOVERY_BACKOFF_SECONDS = 60.0
+
+
+def _ensure_console_can_print_any_unicode() -> None:
+    """Reconfigures stdout/stderr to encode as UTF-8, replacing any
+    character the terminal can't display rather than raising.
+
+    Why this matters: several debug/diagnostic `print()` calls throughout
+    this app (e.g. presentation.py's `_log_prepare_summary`, which prints
+    the raw text of every tagged shape found in the deck) can legitimately
+    contain non-ASCII text - Hebrew, in this app's actual use case, since
+    a deck author will often mix a Hebrew label directly in the same
+    textbox as a hashtag (e.g. "הדלקת נרות: #SHABBOS"). Depending on the
+    machine's active console/terminal code page (which can vary by
+    Windows locale, terminal emulator, whether output is being
+    piped/redirected, etc. - NOT reliably "will support Hebrew just
+    because the OS locale is Hebrew/Israel"), printing such text can
+    raise `UnicodeEncodeError` and crash an otherwise-healthy tick,
+    triggering an unnecessary reconnect/recovery cycle (or an outright
+    exit if `auto_recover=False`). Reconfiguring to UTF-8 with
+    `errors="backslashreplace"` guarantees `print()` never raises for
+    this reason on any platform/console, at the cost of some non-encodable
+    characters showing as `\\uXXXX` escapes in the console instead of
+    their real glyph - an acceptable tradeoff for a diagnostic message.
+    `reconfigure` is only available on real file-like stdout/stderr
+    objects (Python 3.7+) - guarded by try/except since it's not
+    guaranteed to exist in every possible embedding/execution context."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+        except Exception:
+            pass
 
 
 def _connect_and_load(config: LuahConfig, time_source: TimeSource) -> PresentationController:
@@ -131,6 +163,7 @@ def run(config: LuahConfig) -> None:
 
 
 def main() -> None:
+    _ensure_console_can_print_any_unicode()
     config = load_config()
     run(config)
 

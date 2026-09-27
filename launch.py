@@ -82,6 +82,12 @@ def main() -> None:
     env = os.environ.copy()
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = os.pathsep.join(extra_paths + ([existing] if existing else []))
+    # Belt-and-suspenders alongside app.py's own sys.stdout/stderr.reconfigure()
+    # call: guarantees UTF-8 console output (never raising UnicodeEncodeError
+    # on non-ASCII text, e.g. Hebrew shape content in debug logs) from the
+    # very first line printed, regardless of the machine's console code page
+    # or locale settings.
+    env["PYTHONIOENCODING"] = "utf-8:backslashreplace"
 
     print(f"Launching luah_signage under {lo_python} ...")
     result = subprocess.run([str(lo_python), "-m", "luah_signage.app"], env=env)

@@ -25,6 +25,10 @@ from pyzmanim.hebrewcalendar import (
 from pyzmanim.noaa_calculator import Location
 from pyzmanim.zmanim import getchatzosgra
 
+from .tzdata_support import ensure_tzdata_available
+
+ensure_tzdata_available()
+
 
 @dataclass
 class ZmanContext:
