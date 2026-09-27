@@ -100,6 +100,15 @@ class LuahConfig:
     # without needing to guess blindly - leave False for normal/production
     # use (the extra prints add noise and minor overhead).
     debug_slide_advance: bool = False
+    # For DEBUGGING ONLY: when True (the default, intended for normal/
+    # production signage use), the Impress editing window is moved
+    # off-screen and shrunk to 1x1px right after load (see
+    # presentation._move_window_offscreen) so only the fullscreen
+    # slideshow is visible. Set to False to leave that window in its
+    # normal on-screen position/size - useful while debugging, since it
+    # lets you see the editing view (e.g. to visually confirm shape
+    # scanning/tag substitution) without hunting for an off-screen window.
+    hide_editor_window: bool = True
 
 
 def load_config(path: Path | None = None) -> LuahConfig:
@@ -132,4 +141,5 @@ def load_config(path: Path | None = None) -> LuahConfig:
         transition_settle_seconds=data.get("transition_settle_seconds", 1.0),
         mock_start_datetime=data.get("mock_start_datetime"),
         debug_slide_advance=data.get("debug_slide_advance", False),
+        hide_editor_window=data.get("hide_editor_window", True),
     )

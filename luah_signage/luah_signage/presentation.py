@@ -96,6 +96,26 @@ def _move_window_offscreen(document) -> None:
         pass
 
 
+def _restore_window_normal_size(document) -> None:
+    """Counterpart to _move_window_offscreen, used when
+    config.hide_editor_window is False (debugging). A document loaded via
+    loadComponentFromURL (rather than opened by a user click) is NOT given
+    a normal-looking window by LibreOffice on its own - it defaults to a
+    tiny window (observed effectively at/near 0x0 or a few pixels), which
+    looks identical to "hidden" even though hide_editor_window=False only
+    means "don't explicitly shrink/move it off-screen" - the window still
+    needs to be EXPLICITLY given a reasonable on-screen size/position to
+    actually be visible/usable for debugging. Sets a generous default size
+    positioned near the screen's top-left and brings it to the front."""
+    try:
+        window = document.CurrentController.Frame.ContainerWindow
+        window.setPosSize(50, 50, 1200, 800, 15)
+        window.setVisible(True)
+        window.toFront()
+    except Exception:
+        pass
+
+
 def _capture_original_timing(slide) -> dict:
     """Reads `slide`'s original Duration (auto-advance-after-N-seconds) and
     transition properties WITHOUT mutating anything. Used at prepare-time
@@ -338,8 +358,17 @@ class PresentationController:
         # window far off-screen and shrink it to a minimal size - this
         # keeps a genuine window for the slideshow to use as its parent,
         # while nothing of the editing window itself is visible to the
-        # user. See _move_window_offscreen for details.
-        _move_window_offscreen(self.document)
+        # user. See _move_window_offscreen for details. Debug off-switch:
+        # config.hide_editor_window=False leaves it in its normal on-screen
+        # position/size, useful while debugging.
+        if self.config.hide_editor_window:
+            _move_window_offscreen(self.document)
+        else:
+            # LibreOffice gives API-opened documents a tiny default window
+            # size on its own (looks "hidden" either way) - explicitly
+            # give it a normal, visible size/position instead. See
+            # _restore_window_normal_size's docstring.
+            _restore_window_normal_size(self.document)
         self._prepare_document()
 
     def reload(self) -> None:
