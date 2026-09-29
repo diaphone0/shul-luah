@@ -1,6 +1,7 @@
 {
-  "_comment": "Copy this file to config.json (next to it) and edit for your site. pptx_path accepts forward slashes on every OS (e.g. Windows: 'C:/luah/luah.pptx', Linux: '/home/pi/luah/luah.pptx') - point it at wherever your cloud-sync client keeps the file.",
+  "_comment": "Copy this file to config.json (next to it) and edit for your site. pptx_path accepts forward slashes on every OS (e.g. Windows: 'C:/luah/luah.pptx', Linux: '/home/pi/luah/luah.pptx') - point it at wherever your cloud-sync client keeps the file. Leave pptx_path empty/null to default to 'luah.pptx' next to launch.py.",
   "_comment_mock_start_datetime": "FOR TESTING ONLY: set to an ISO-8601 datetime string (e.g. '2026-09-25T14:30:00') to simulate the clock starting at that date/time (advancing normally from there) instead of using the real system clock - useful for testing zmanim/#CHOLONLY/#NONCHOLONLY behavior on a specific day without changing the OS clock. Leave null for normal/production use.",
+  "_comment_debug_repaint": "FOR DEBUGGING ONLY: each debug_repaint_* flag independently disables one anti-flicker tweak, to help isolate which one (if any) causes frozen/non-updating clock hands on a particular machine. Leave all at their defaults for normal/production use.",
   "pptx_path": "C:/luah/luah.pptx",
   "location": {
     "latitude": 32.06,
@@ -19,6 +20,10 @@
   "mock_start_datetime": null,
   "debug_slide_advance": false,
   "hide_editor_window": true,
+  "debug_repaint_lock_controllers": true,
+  "debug_repaint_skip_unchanged_clock_writes": true,
+  "debug_repaint_update_offscreen_clocks": true,
+  "debug_repaint_nudge_shape": false,
   "clock_style": {
     "hour_length_ratio": 0.5,
     "minute_length_ratio": 0.85,

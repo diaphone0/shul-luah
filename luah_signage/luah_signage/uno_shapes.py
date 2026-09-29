@@ -180,7 +180,13 @@ def create_analog_clock(
     return clock
 
 
-def update_analog_clock(clock: AnalogClock, now: datetime) -> None:
+def update_analog_clock(
+    clock: AnalogClock,
+    now: datetime,
+    *,
+    skip_unchanged_writes: bool = True,
+    nudge_shape: bool = False,
+) -> None:
     """Recomputes each hand's tip/tail coordinates directly for the current
     time and re-sets the shape's polygon points (see clock_geometry module
     docstring for why this is done instead of setting RotateAngle). Each
@@ -188,36 +194,73 @@ def update_analog_clock(clock: AnalogClock, now: datetime) -> None:
     clock_geometry.stabilize_angle against its own last-rendered angle
     first, so a small backward wall-clock time step (e.g. an NTP
     correction) never makes a hand visibly twitch backward. Skips the
-    second hand entirely if the clock was built without one."""
-    _refresh_hand(clock, clock.hour, clock_geometry.hour_angle_deg(now), clock.hour_tip_length, "last_hour_angle")
-    _refresh_hand(clock, clock.minute, clock_geometry.minute_angle_deg(now), clock.minute_tip_length, "last_minute_angle")
+    second hand entirely if the clock was built without one.
+
+    `skip_unchanged_writes`/`nudge_shape` correspond directly to
+    LuahConfig.debug_repaint_skip_unchanged_clock_writes/
+    debug_repaint_nudge_shape - see that dataclass's docstrings for what
+    each does and why they exist (diagnosing a machine-specific
+    frozen-clock-hands rendering bug)."""
+    _refresh_hand(
+        clock, clock.hour, clock_geometry.hour_angle_deg(now), clock.hour_tip_length, "last_hour_angle",
+        skip_unchanged_writes=skip_unchanged_writes, nudge_shape=nudge_shape,
+    )
+    _refresh_hand(
+        clock, clock.minute, clock_geometry.minute_angle_deg(now), clock.minute_tip_length, "last_minute_angle",
+        skip_unchanged_writes=skip_unchanged_writes, nudge_shape=nudge_shape,
+    )
     if clock.second is not None:
-        _refresh_hand(clock, clock.second, clock_geometry.second_angle_deg(now), clock.second_tip_length, "last_second_angle")
+        _refresh_hand(
+            clock, clock.second, clock_geometry.second_angle_deg(now), clock.second_tip_length, "last_second_angle",
+            skip_unchanged_writes=skip_unchanged_writes, nudge_shape=nudge_shape,
+        )
 
 
-def _refresh_hand(clock: AnalogClock, shape, raw_angle_deg: float, tip_length: float, last_angle_attr: str) -> None:
+def _refresh_hand(
+    clock: AnalogClock,
+    shape,
+    raw_angle_deg: float,
+    tip_length: float,
+    last_angle_attr: str,
+    *,
+    skip_unchanged_writes: bool = True,
+    nudge_shape: bool = False,
+) -> None:
     """Stabilizes `raw_angle_deg` against the hand's own last-rendered
-    angle (stored on `clock` under `last_angle_attr`), and only actually
-    rewrites the shape's PolyPolygon if the stabilized angle differs from
-    what was last rendered.
+    angle (stored on `clock` under `last_angle_attr`), and rewrites the
+    shape's PolyPolygon if the stabilized angle differs from what was
+    last rendered (or unconditionally, if `skip_unchanged_writes=False` -
+    see LuahConfig.debug_repaint_skip_unchanged_clock_writes).
 
-    The "only write if changed" part matters on top of stabilize_angle
-    itself: on ticks where stabilize_angle decides to HOLD the hand at its
-    previous position (suppressing a small backward wall-clock jitter -
-    see that function's docstring), the computed tip/tail points would be
-    IDENTICAL to what's already on screen. Re-setting a shape's
-    PolyPolygon property to the exact same value it already had was
-    observed/suspected to still cause LibreOffice's slideshow view to
-    redraw/repaint that shape - which can itself look like a subtle
-    flicker/twitch, precisely on the ticks meant to look perfectly static.
-    Skipping the property write entirely when nothing actually needs to
-    change avoids this residual artifact."""
+    The "only write if changed" behavior matters on top of
+    stabilize_angle itself: on ticks where stabilize_angle decides to
+    HOLD the hand at its previous position (suppressing a small backward
+    wall-clock jitter - see that function's docstring), the computed
+    tip/tail points would be IDENTICAL to what's already on screen.
+    Re-setting a shape's PolyPolygon property to the exact same value it
+    already had was observed/suspected to still cause LibreOffice's
+    slideshow view to redraw/repaint that shape - which can itself look
+    like a subtle flicker/twitch, precisely on the ticks meant to look
+    perfectly static. Skipping the property write entirely when nothing
+    actually needs to change avoids this residual artifact.
+
+    `nudge_shape=True` (see LuahConfig.debug_repaint_nudge_shape) toggles
+    the shape's Visible property off then back on immediately after
+    writing its PolyPolygon, whenever a write actually happens - an
+    experimental, heavier-handed attempt to force a stubborn rendering
+    backend to notice the change, at the risk of a brief visible blink."""
     last_angle = getattr(clock, last_angle_attr)
     stabilized = clock_geometry.stabilize_angle(raw_angle_deg, last_angle)
     changed = last_angle is None or stabilized != last_angle
     setattr(clock, last_angle_attr, stabilized)
-    if not changed:
+    if not changed and skip_unchanged_writes:
         return
     tip, tail = clock_geometry.hand_endpoints(clock.center, stabilized, tip_length, clock.tail_length)
     _set_hand_points(shape, tip, tail)
+    if nudge_shape:
+        try:
+            shape.Visible = False
+            shape.Visible = True
+        except Exception:
+            pass
 

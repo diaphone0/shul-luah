@@ -643,6 +643,11 @@ class PresentationController:
                 # animation may still be playing - see
                 # _suppress_clock_for_transition/poll_slide_advance.
                 continue
+            if not self.config.debug_repaint_update_offscreen_clocks and idx != self._last_known_slide_index:
+                # DEBUG-ONLY: reproduces an earlier version's behavior
+                # (only ever update the CURRENT slide's clock) - see
+                # LuahConfig.debug_repaint_update_offscreen_clocks.
+                continue
             active_clocks.append(clock)
 
         if self._debug and self._last_known_slide_index != self._debug_last_clock_log_index:
@@ -663,13 +668,24 @@ class PresentationController:
         # individually repainted by the slideshow view, causing a visible
         # flash/flicker every tick (only noticeable in the actual
         # slideshow/presentation window - the Impress editing window does
-        # not repaint per-property-change the same way).
-        self.document.lockControllers()
+        # not repaint per-property-change the same way). Can be disabled
+        # via LuahConfig.debug_repaint_lock_controllers for diagnosing a
+        # machine-specific frozen-clock-hands rendering bug (see that
+        # field's docstring).
+        use_lock = self.config.debug_repaint_lock_controllers
+        if use_lock:
+            self.document.lockControllers()
         try:
             for clock in active_clocks:
-                update_analog_clock(clock, now)
+                update_analog_clock(
+                    clock,
+                    now,
+                    skip_unchanged_writes=self.config.debug_repaint_skip_unchanged_clock_writes,
+                    nudge_shape=self.config.debug_repaint_nudge_shape,
+                )
         finally:
-            self.document.unlockControllers()
+            if use_lock:
+                self.document.unlockControllers()
 
     def refresh_content(self, now: datetime) -> None:
         if not self.tracked_shapes and not self._slide_day_mode:
@@ -681,12 +697,15 @@ class PresentationController:
             timezone=self.config.timezone,
         )
         if self.tracked_shapes:
-            self.document.lockControllers()
+            use_lock = self.config.debug_repaint_lock_controllers
+            if use_lock:
+                self.document.lockControllers()
             try:
                 for tracked in self.tracked_shapes:
                     tracked.refresh(ctx)
             finally:
-                self.document.unlockControllers()
+                if use_lock:
+                    self.document.unlockControllers()
         if self._slide_day_mode:
             self._apply_day_mode_visibility(ctx.today_is_chol)
 

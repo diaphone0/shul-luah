@@ -18,6 +18,10 @@
   "_mock_start_datetime": null,
   "debug_slide_advance": false,
   "hide_editor_window": false,
+  "debug_repaint_lock_controllers": true,
+  "debug_repaint_skip_unchanged_clock_writes": true,
+  "debug_repaint_update_offscreen_clocks": true,
+  "debug_repaint_nudge_shape": false,
   "clock_style": {
     "hour_length_ratio": 0.5,
     "minute_length_ratio": 0.85,

@@ -16,7 +16,13 @@ from pyzmanim.noaa_calculator import Location
 # config.py lives at <repo_root>/luah_signage/luah_signage/config.py, so
 # config.json (repo-root-level, alongside pyzmanim-lib/ and reference/) is
 # two directories up.
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config.json"
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+DEFAULT_CONFIG_PATH = REPO_ROOT / "config.json"
+# Default presentation file used when config.json's "pptx_path" is missing
+# or empty - the sample/test deck shipped alongside launch.py at the repo
+# root, so a bare-minimum config (or one with pptx_path accidentally left
+# blank) still has something to load rather than failing outright.
+DEFAULT_PPTX_PATH = REPO_ROOT / "luah.pptx"
 
 
 @dataclass
@@ -109,6 +115,63 @@ class LuahConfig:
     # lets you see the editing view (e.g. to visually confirm shape
     # scanning/tag substitution) without hunting for an off-screen window.
     hide_editor_window: bool = True
+    # --- debug_repaint_* : DEBUGGING ONLY -----------------------------
+    # Independent on/off toggles for each of the individual tweaks that
+    # were added over time to avoid visible flashing/flickering in the
+    # analog clock and tagged-text refreshes. Added because on SOME
+    # machines (observed: certain x86 and ARM systems, but not others) the
+    # clock hands stop visibly moving in the live slideshow window -
+    # updates only become visible after navigating away from and back to
+    # the slide - while other machines running the identical deck/config
+    # work flawlessly. This strongly suggests a LibreOffice/graphics-
+    # driver rendering-pipeline quirk that one of these anti-flicker
+    # tweaks interacts badly with on certain systems, but which one is
+    # unknown without being able to test directly on the affected
+    # hardware. Each flag below lets you disable ONE tweak at a time (by
+    # editing config.json and relaunching) to isolate which one is
+    # responsible on a given machine - leave all at their defaults for
+    # normal/production use, where the tweaks are known to help far more
+    # often than they hurt.
+    #
+    # Controls whether refresh_clock/refresh_content wrap their shape
+    # updates in document.lockControllers()/unlockControllers() (batches
+    # multiple shape updates into a single repaint - see refresh_clock's
+    # comment). Set to False to update shapes with no batching at all, one
+    # UNO call at a time - if THIS is the culprit, disabling it should at
+    # least restore live hand movement (likely reintroducing the flash
+    # the batching was meant to prevent, but that's the whole point of
+    # isolating the variable).
+    debug_repaint_lock_controllers: bool = True
+    # Controls the "only rewrite a clock hand's PolyPolygon if its angle
+    # actually changed since last tick" optimization (see uno_shapes.py's
+    # _refresh_hand). Set to False to unconditionally rewrite every
+    # hand's PolyPolygon on every tick, even when the computed position
+    # is identical to what's already there.
+    debug_repaint_skip_unchanged_clock_writes: bool = True
+    # Controls whether clocks on VISIBLE slides other than the one
+    # currently being displayed are updated every tick at all (see
+    # refresh_clock's comment on why this was added - freezing them
+    # caused a visible "jump" the next time that slide became current).
+    # Set to False to go back to updating ONLY the current slide's
+    # clock(s), matching how an earlier version of this code behaved.
+    debug_repaint_update_offscreen_clocks: bool = True
+    # EXPERIMENTAL, default OFF: after a clock hand's PolyPolygon is
+    # rewritten, also toggles that hand shape's Visible property off then
+    # back on immediately - forcing it to be removed and re-inserted into
+    # the render tree, which may force a stubborn rendering backend to
+    # actually repaint it even if a plain property write alone doesn't
+    # seem to. This is a heavier-handed workaround than the other toggles
+    # above (not merely disabling an optimization, but adding a new one)
+    # and may itself cause a very brief visible blink of the hand - only
+    # try this if disabling the other debug_repaint_* toggles individually
+    # doesn't resolve the frozen-hands symptom on a given machine.
+    debug_repaint_nudge_shape: bool = False
+
+
+def _resolve_pptx_path(raw: str | None) -> Path:
+    if not raw:
+        return DEFAULT_PPTX_PATH
+    return Path(raw)
 
 
 def load_config(path: Path | None = None) -> LuahConfig:
@@ -126,7 +189,7 @@ def load_config(path: Path | None = None) -> LuahConfig:
     )
     clock_style_data = data.get("clock_style", {})
     return LuahConfig(
-        pptx_path=Path(data["pptx_path"]),
+        pptx_path=_resolve_pptx_path(data.get("pptx_path")),
         location=location,
         eretz_yisroel=data.get("eretz_yisroel", True),
         timezone=data.get("timezone", "Asia/Jerusalem"),
@@ -142,4 +205,12 @@ def load_config(path: Path | None = None) -> LuahConfig:
         mock_start_datetime=data.get("mock_start_datetime"),
         debug_slide_advance=data.get("debug_slide_advance", False),
         hide_editor_window=data.get("hide_editor_window", True),
+        debug_repaint_lock_controllers=data.get("debug_repaint_lock_controllers", True),
+        debug_repaint_skip_unchanged_clock_writes=data.get(
+            "debug_repaint_skip_unchanged_clock_writes", True
+        ),
+        debug_repaint_update_offscreen_clocks=data.get(
+            "debug_repaint_update_offscreen_clocks", True
+        ),
+        debug_repaint_nudge_shape=data.get("debug_repaint_nudge_shape", False),
     )
