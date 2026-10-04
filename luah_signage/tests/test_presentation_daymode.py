@@ -10,6 +10,7 @@ docstring.
 from __future__ import annotations
 
 from luah_signage.presentation import (
+    DAY_MODE_ALWAYS_HIDDEN,
     DAY_MODE_CHOL_ONLY,
     DAY_MODE_NONCHOL_ONLY,
     _reconcile_day_modes,
@@ -17,22 +18,22 @@ from luah_signage.presentation import (
 
 
 def test_no_tags_means_always_visible():
-    result = _reconcile_day_modes(set(), set(), slide_count=3)
+    result = _reconcile_day_modes(set(), set(), set(), slide_count=3)
     assert result == {}
 
 
 def test_cholonly_only_slide():
-    result = _reconcile_day_modes({1}, set(), slide_count=3)
+    result = _reconcile_day_modes({1}, set(), set(), slide_count=3)
     assert result == {1: DAY_MODE_CHOL_ONLY}
 
 
 def test_noncholonly_only_slide():
-    result = _reconcile_day_modes(set(), {2}, slide_count=3)
+    result = _reconcile_day_modes(set(), {2}, set(), slide_count=3)
     assert result == {2: DAY_MODE_NONCHOL_ONLY}
 
 
 def test_both_tags_on_same_slide_means_always_visible():
-    result = _reconcile_day_modes({0}, {0}, slide_count=1)
+    result = _reconcile_day_modes({0}, {0}, set(), slide_count=1)
     assert result == {}
 
 
@@ -42,7 +43,7 @@ def test_mixed_deck():
     # slide 2: #NONCHOLONLY only -> non-chol-only
     # slide 3: both tags -> always
     result = _reconcile_day_modes(
-        cholonly_indices={0, 3}, noncholonly_indices={2, 3}, slide_count=4
+        cholonly_indices={0, 3}, noncholonly_indices={2, 3}, hidden_indices=set(), slide_count=4
     )
     assert result == {0: DAY_MODE_CHOL_ONLY, 2: DAY_MODE_NONCHOL_ONLY}
 
@@ -51,8 +52,43 @@ def test_out_of_range_indices_ignored():
     # slide_count=2, but sets reference indices beyond range - should not
     # appear in the result (only indices in range(slide_count) are ever
     # considered).
-    result = _reconcile_day_modes({5}, set(), slide_count=2)
+    result = _reconcile_day_modes({5}, set(), set(), slide_count=2)
     assert result == {}
+
+
+def test_hidden_only_slide():
+    result = _reconcile_day_modes(set(), set(), {1}, slide_count=3)
+    assert result == {1: DAY_MODE_ALWAYS_HIDDEN}
+
+
+def test_hidden_takes_precedence_over_cholonly():
+    result = _reconcile_day_modes({0}, set(), {0}, slide_count=1)
+    assert result == {0: DAY_MODE_ALWAYS_HIDDEN}
+
+
+def test_hidden_takes_precedence_over_noncholonly():
+    result = _reconcile_day_modes(set(), {0}, {0}, slide_count=1)
+    assert result == {0: DAY_MODE_ALWAYS_HIDDEN}
+
+
+def test_hidden_takes_precedence_over_both_cholonly_and_noncholonly():
+    result = _reconcile_day_modes({0}, {0}, {0}, slide_count=1)
+    assert result == {0: DAY_MODE_ALWAYS_HIDDEN}
+
+
+def test_mixed_deck_with_hidden_slide():
+    # slide 0: #CHOLONLY only -> chol-only
+    # slide 1: #HIDDEN only -> always hidden
+    # slide 2: #NONCHOLONLY only -> non-chol-only
+    # slide 3: no tags -> always visible
+    result = _reconcile_day_modes(
+        cholonly_indices={0}, noncholonly_indices={2}, hidden_indices={1}, slide_count=4
+    )
+    assert result == {
+        0: DAY_MODE_CHOL_ONLY,
+        1: DAY_MODE_ALWAYS_HIDDEN,
+        2: DAY_MODE_NONCHOL_ONLY,
+    }
 
 
 if __name__ == "__main__":

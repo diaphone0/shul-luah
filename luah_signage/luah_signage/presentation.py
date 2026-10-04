@@ -193,14 +193,15 @@ def _restore_slide_transition(slide, original: dict) -> None:
 # Values used in PresentationController._slide_day_mode.
 DAY_MODE_CHOL_ONLY = "CHOL_ONLY"
 DAY_MODE_NONCHOL_ONLY = "NONCHOL_ONLY"
+DAY_MODE_ALWAYS_HIDDEN = "ALWAYS_HIDDEN"
 
 
 def _reconcile_day_modes(
-    cholonly_indices: set, noncholonly_indices: set, slide_count: int
+    cholonly_indices: set, noncholonly_indices: set, hidden_indices: set, slide_count: int
 ) -> dict:
     """Pure (no UNO dependency) reconciliation of which slides are marked
-    #CHOLONLY / #NONCHOLONLY (as collected during shape scanning) into a
-    final per-slide-index day-mode dict.
+    #CHOLONLY / #NONCHOLONLY / #HIDDEN (as collected during shape
+    scanning) into a final per-slide-index day-mode dict.
 
     Per the design: a slide tagged #CHOLONLY (and NOT also #NONCHOLONLY)
     shows only on chol (regular weekday) days; a slide tagged #NONCHOLONLY
@@ -209,9 +210,18 @@ def _reconcile_day_modes(
     (an authoring edge case, e.g. two separate marker shapes on the same
     slide), shows every day - such slides are simply left out of the
     returned dict entirely (the caller should treat "not present in this
-    dict" as "always visible, never touched")."""
+    dict" as "always visible, never touched").
+
+    A slide tagged #HIDDEN is ALWAYS hidden - on both chol and non-chol
+    days - regardless of whether it's also tagged #CHOLONLY/#NONCHOLONLY
+    (#HIDDEN takes precedence over both, a deliberate simplification: a
+    slide you want permanently hidden shouldn't need its other day-mode
+    tags removed first)."""
     result: dict = {}
     for index in range(slide_count):
+        if index in hidden_indices:
+            result[index] = DAY_MODE_ALWAYS_HIDDEN
+            continue
         is_cholonly = index in cholonly_indices
         is_noncholonly = index in noncholonly_indices
         if is_cholonly and not is_noncholonly:
@@ -436,6 +446,7 @@ class PresentationController:
     def _prepare_document(self) -> None:
         cholonly_indices: set = set()
         noncholonly_indices: set = set()
+        hidden_indices: set = set()
 
         for index, slide, shape in iter_all_shapes(self.document):
             if not is_text_shape(shape):
@@ -450,16 +461,20 @@ class PresentationController:
                 shape.setString("")
                 shape.Visible = False
                 self.multimode_shapes.append(shape)
-            elif "#CHOLONLY" in text or "#NONCHOLONLY" in text:
+            elif "#CHOLONLY" in text or "#NONCHOLONLY" in text or "#HIDDEN" in text:
                 # Pure marker shapes (like #MULTIMODE) - not meant to
                 # display their own literal tag text, just to flag which
                 # day-mode(s) apply to the slide they're on. A slide can
-                # have both markers (as two separate shapes) - see
-                # _reconcile_day_modes for how that's resolved.
+                # have multiple markers (as separate shapes, or combined
+                # in one shape's text) - see _reconcile_day_modes for how
+                # these are resolved (#HIDDEN takes precedence over
+                # #CHOLONLY/#NONCHOLONLY if a slide somehow has both).
                 if "#CHOLONLY" in text:
                     cholonly_indices.add(index)
                 if "#NONCHOLONLY" in text:
                     noncholonly_indices.add(index)
+                if "#HIDDEN" in text:
+                    hidden_indices.add(index)
                 shape.setString("")
                 shape.Visible = False
             elif tagging.contains_known_tag(text):
@@ -468,7 +483,7 @@ class PresentationController:
         slides = self.document.DrawPages
         self._slides_by_index = [slides.getByIndex(i) for i in range(slides.Count)]
         self._slide_day_mode = _reconcile_day_modes(
-            cholonly_indices, noncholonly_indices, len(self._slides_by_index)
+            cholonly_indices, noncholonly_indices, hidden_indices, len(self._slides_by_index)
         )
         for index, slide in enumerate(self._slides_by_index):
             # Read-only at this point - see _suppress_slide_timing's
@@ -492,15 +507,34 @@ class PresentationController:
 
         self._cmd_arg_keys = tagging.find_cmd_arg_keys(t.template for t in self.tracked_shapes)
 
+        # Render tagged text shapes ONCE right after scanning - without
+        # this, a freshly loaded/reloaded deck would keep showing raw,
+        # unrendered "#TAG" placeholder text until the next already-
+        # scheduled refresh_content tick in app.py's main loop fires (up
+        # to content_tick_seconds, default 30s, later) - most noticeable
+        # right after a reload() triggered by the file-watcher, where the
+        # newly-reloaded content would otherwise visibly flash raw tag
+        # text for a few seconds before settling. This ALSO re-applies
+        # day-mode visibility (redundant with the block above, but
+        # harmless - _apply_day_mode_visibility only writes a slide's
+        # Visible property if it's actually changing). #CMD tags
+        # specifically will still render blank until the (separate, much
+        # less frequent) cmd-tag cache is populated - see
+        # refresh_cmd_tags - that's expected/unchanged.
+        if self.tracked_shapes:
+            self.refresh_content(self.time_source.now())
+
         self._warm_up_slides()
         self._log_prepare_summary()
 
     def _apply_day_mode_visibility(self, today_is_chol: bool) -> None:
-        """Shows/hides every #CHOLONLY/#NONCHOLONLY-tagged slide according
-        to whether today counts as chol - see _reconcile_day_modes for how
-        each slide's mode was determined, and zman_context.build_zman_context
-        for how today_is_chol itself is computed (mirrors the original
-        VBA's own Friday-post-chatzos-or-Saturday check).
+        """Shows/hides every #CHOLONLY/#NONCHOLONLY/#HIDDEN-tagged slide
+        according to whether today counts as chol - see
+        _reconcile_day_modes for how each slide's mode was determined, and
+        zman_context.build_zman_context for how today_is_chol itself is
+        computed (mirrors the original VBA's own Friday-post-chatzos-or-
+        Saturday check). A slide tagged #HIDDEN is always hidden
+        regardless of today_is_chol - see _reconcile_day_modes's docstring.
 
         Uses Impress's per-slide "Visible" property (the same one PowerPoint
         calls SlideShowTransition.Hidden / the UI's "Hide Slide") - a
@@ -533,7 +567,10 @@ class PresentationController:
             if not (0 <= index < len(self._slides_by_index)):
                 continue
             slide = self._slides_by_index[index]
-            desired_visible = today_is_chol if mode == DAY_MODE_CHOL_ONLY else not today_is_chol
+            if mode == DAY_MODE_ALWAYS_HIDDEN:
+                desired_visible = False
+            else:
+                desired_visible = today_is_chol if mode == DAY_MODE_CHOL_ONLY else not today_is_chol
             try:
                 if slide.Visible != desired_visible:
                     slide.Visible = desired_visible
@@ -610,12 +647,14 @@ class PresentationController:
         operation."""
         chol_only = sum(1 for m in self._slide_day_mode.values() if m == DAY_MODE_CHOL_ONLY)
         noncholonly = sum(1 for m in self._slide_day_mode.values() if m == DAY_MODE_NONCHOL_ONLY)
+        always_hidden = sum(1 for m in self._slide_day_mode.values() if m == DAY_MODE_ALWAYS_HIDDEN)
         print(
             f"luah_signage: loaded presentation - "
             f"{len(self._slides_by_index)} slide(s), "
             f"{len(self.tracked_shapes)} tagged text shape(s), "
             f"{len(self.clocks)} analog clock(s), "
             f"{chol_only} chol-only slide(s), {noncholonly} non-chol-only slide(s), "
+            f"{always_hidden} always-hidden slide(s), "
             f"{len(self._cmd_arg_keys)} distinct #CMD arg key(s)."
         )
         for tracked in self.tracked_shapes:

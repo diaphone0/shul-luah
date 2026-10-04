@@ -294,10 +294,12 @@ def refresh_cmd_cache(
         cache[key] = _run_cmd_tag(cmd_executable, key, timeout_seconds, global_args)
 
 
-def _fmt_time(hd, offset_minutes: int = 0) -> str:
+def _fmt_time(hd, offset_minutes: int = 0, minute_ceil: bool = False) -> str:
     dt = hdate_gregorian(hd)
     if offset_minutes:
         dt = dt + timedelta(minutes=offset_minutes)
+    if minute_ceil and dt.second >= 2:
+        dt = dt.replace(second=0, microsecond=0) + timedelta(minutes=1)
     return dt.strftime("%H:%M")
 
 
@@ -349,11 +351,15 @@ def _tag_limudyomi(ctx: ZmanContext, offset_minutes: int) -> str:
     parts = rambam.split(";", 2)
     if len(parts) == 3:
         rambam = f"{parts[0]} - {parts[1]}\n{parts[2]}"
-    daf = dafyomi.get_daf_yomi_format(hdate_gregorian(ctx.now).date())
+    daf_bavli = dafyomi.get_daf_yomi_format(hdate_gregorian(ctx.now).date())
+    daf_yerushalmi = dafyomi.get_daf_yomi_format(hdate_gregorian(ctx.now).date(),True)
+    mishna_yomi = dafyomi.get_mishna_yomi_format(hdate_gregorian(ctx.now).date())
     return (
-        f"דף היום:\n{daf}\n\n"
+        f"בבלי: {daf_bavli}\n"
+        f"ירושלמי: {daf_yerushalmi}\n"
+        f"משניות: {mishna_yomi}\n\n"
         f'רמב"ם היום:\n{rambam}\n\n'
-        f"תהלים:\n{shiur.tehillim(ctx.now)}"
+        f"תהילים:\n{shiur.tehillim(ctx.now)}"
     )
 
 
@@ -367,7 +373,7 @@ TAG_REGISTRY: dict[str, Callable[[ZmanContext, int], str]] = {
     "SHABBOS": lambda ctx, off: _fmt_time(zmanim.getelevationsunset(ctx.erev_shabbos, ctx.location), off),
     "MOZASH": lambda ctx, off: _fmt_time(zmanim.gettzais8p5(ctx.shabbos, ctx.location), off),
     "LIMUDYOMI": _tag_limudyomi,
-    "DICLOCK": lambda ctx, off: hdate_gregorian(ctx.now).strftime("%H:%M:%S"),
+    "DICLOCK": lambda ctx, off: hdate_gregorian(ctx.now).strftime("%H:%M"),
     "ALOS72": lambda ctx, off: _fmt_time(zmanim.getalos72(ctx.now, ctx.location), off),
     "SUNRISE": lambda ctx, off: _fmt_time(zmanim.getsunrise(ctx.now, ctx.location), off),
     "SHMAMGA": lambda ctx, off: _fmt_time(zmanim.getshmamga(ctx.now, ctx.location), off),
@@ -379,6 +385,7 @@ TAG_REGISTRY: dict[str, Callable[[ZmanContext, int], str]] = {
     "LTMINHA": lambda ctx, off: _fmt_time(zmanim.getminchaketanagra(ctx.now, ctx.location), off),
     "SUNSET": lambda ctx, off: _fmt_time(zmanim.getelevationsunset(ctx.now, ctx.location), off),
     "TZAIS": lambda ctx, off: _fmt_time(zmanim.gettzais8p5(ctx.now, ctx.location), off),
+    "TZAISYESHIVA": lambda ctx, off: _fmt_time(zmanim.gettzaisyeshiva(ctx.now, ctx.location, True), off, True),
 }
 
 # Tags that are handled elsewhere (analog clock shape generation, deferred

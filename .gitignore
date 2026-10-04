@@ -19,6 +19,11 @@ env/
 Thumbs.db
 .DS_Store
 
+# Microsoft Office lock files (created while a .pptx/.docx/.xlsx is open)
+~$*.pptx
+~$*.docx
+~$*.xlsx
+
 # mg_sync - experimental old-signage prayer-times scraper, not ready to
 # commit yet (also may contain copied browser profile data/cookies - must
 # NEVER be committed).

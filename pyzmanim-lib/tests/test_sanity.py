@@ -70,6 +70,39 @@ def test_zmanim_with_fractional_shaah_zmanis_multipliers_do_not_crash():
         assert isinstance(dt.hour, int) and isinstance(dt.minute, int) and isinstance(dt.second, int)
 
 
+def test_tzaisyeshiva_summer_uses_zmanis_minutes_longer_than_18():
+    # Summer solstice: day > 12 hours (shaah zmanis > 60 real minutes), so
+    # tzais should be MORE than a fixed 18 real minutes after sunset (18
+    # "zmanis" minutes, proportionally longer).
+    h = convert_date(datetime(2024, 6, 21))
+    sunset = hdate_gregorian(zmanim.getsunset(h, JERUSALEM))
+    tzais = hdate_gregorian(zmanim.gettzaisyeshiva(h, JERUSALEM))
+    delta_minutes = (tzais - sunset).total_seconds() / 60
+    assert delta_minutes > 18
+
+
+def test_tzaisyeshiva_winter_uses_fixed_18_minutes():
+    # Winter solstice: day <= 12 hours (shaah zmanis <= 60 real minutes),
+    # so tzais should be EXACTLY 18 fixed real minutes after sunset.
+    h = convert_date(datetime(2024, 12, 21))
+    sunset = hdate_gregorian(zmanim.getsunset(h, JERUSALEM))
+    tzais = hdate_gregorian(zmanim.gettzaisyeshiva(h, JERUSALEM))
+    delta_minutes = (tzais - sunset).total_seconds() / 60
+    assert abs(delta_minutes - 18) < 0.01
+
+
+def test_tzaisyeshiva_elevation_adjusted_is_later_than_flat():
+    # adjust_for_elevation=True should use the (later) elevation-adjusted
+    # sunset as its base instead of the flat/level one, making the
+    # resulting tzais later too. Default (False) must be unchanged.
+    h = convert_date(datetime(2024, 6, 21))
+    flat = hdate_gregorian(zmanim.gettzaisyeshiva(h, JERUSALEM))
+    flat_explicit = hdate_gregorian(zmanim.gettzaisyeshiva(h, JERUSALEM, False))
+    elevated = hdate_gregorian(zmanim.gettzaisyeshiva(h, JERUSALEM, True))
+    assert flat == flat_explicit
+    assert elevated > flat
+
+
 def test_num_to_h_char_gematria():
     assert hdateformat.num_to_h_char(5784) == "תשפ\u05f4ד"
     assert hdateformat.num_to_h_char(15) == "ט\u05f4ו"  # avoids יה (divine name)

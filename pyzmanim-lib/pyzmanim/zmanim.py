@@ -417,6 +417,38 @@ def gettzais72(date_in: HDate, here: Location) -> HDate:
     return calctimeoffset(getsunset(date_in, here), MINUTES72)
 
 
+def gettzaisyeshiva(date_in: HDate, here: Location, adjust_for_elevation: bool = False) -> HDate:
+    """Tzais hakochavim per the ruling of Rav Zalman Baruch Melamed
+    shlit"a (Yeshivat Har Hamor): in summer (day length greater than 12
+    hours - i.e. a shaah zmanis longer than 60 real minutes), tzais is 18
+    "zmanis" (proportional) minutes after the flat/level sunset (no
+    elevation adjustment); in winter (day 12 hours or shorter), tzais is
+    a fixed 18 real minutes after that same sunset instead - so tzais is
+    never less than 18 minutes after sunset either way. Does not (yet)
+    implement the stricter Tisha B'Av exception (6.45 degrees below the
+    horizon) mentioned in the same ruling - only the general case for
+    ordinary fast days.
+
+    adjust_for_elevation=True uses the elevation-adjusted sunset
+    (getelevationsunset) as the base sunset instead of the flat/level one
+    (getsunset) - matching the same adjust_for_elevation convention used
+    by calcsunrise/calcsunset elsewhere in this module. Defaults to False
+    (flat sunset), matching the ruling's own wording ("ha-shkiah
+    ha-mishorit" - the level/flat sunset, not an elevation-adjusted one)."""
+    sunset = getelevationsunset(date_in, here) if adjust_for_elevation else getsunset(date_in, here)
+    shaahzmanis = getshaahzmanisgra(date_in, here)
+    if shaahzmanis == 0:
+        return EMPTY_HDATE
+    # shaahzmanis is the length of one proportional hour, in milliseconds;
+    # comparing it to MINUTES60 (60 real minutes) tells us whether the day
+    # is longer (summer) or shorter-or-equal (winter) than 12 hours - a
+    # shaah zmanis longer than a real hour means the whole (12-hour) day is
+    # longer than 12 real hours. 18 "zmanis" minutes = 18/60 of one shaah
+    # zmanis.
+    offset = (shaahzmanis * 18 / 60) if shaahzmanis > MINUTES60 else MINUTES18
+    return calctimeoffset(sunset, offset)
+
+
 def calcmoladoffset(date_in: HDate, offsetsec: int) -> HDate:
     from pyzmanim.hebrewcalendar import get_molad
 

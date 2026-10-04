@@ -50,6 +50,68 @@ def test_render_template_sunrise_sunset():
     assert "Sunset: 19" in text or "Sunset: 20" in text
 
 
+def test_fmt_time_minute_ceil_default_truncates():
+    from pyzmanim.hebrewcalendar import convert_date
+
+    hd = convert_date(datetime(2024, 6, 21, 18, 30, 45))
+    assert tagging._fmt_time(hd) == "18:30"
+
+
+def test_fmt_time_minute_ceil_rounds_up_at_2_seconds():
+    from pyzmanim.hebrewcalendar import convert_date
+
+    hd = convert_date(datetime(2024, 6, 21, 18, 30, 2))
+    assert tagging._fmt_time(hd, minute_ceil=True) == "18:31"
+
+
+def test_fmt_time_minute_ceil_does_not_round_up_below_2_seconds():
+    from pyzmanim.hebrewcalendar import convert_date
+
+    hd0 = convert_date(datetime(2024, 6, 21, 18, 30, 0))
+    hd1 = convert_date(datetime(2024, 6, 21, 18, 30, 1))
+    assert tagging._fmt_time(hd0, minute_ceil=True) == "18:30"
+    assert tagging._fmt_time(hd1, minute_ceil=True) == "18:30"
+
+
+def test_fmt_time_minute_ceil_rolls_over_hour_boundary():
+    from pyzmanim.hebrewcalendar import convert_date
+
+    hd = convert_date(datetime(2024, 6, 21, 18, 59, 30))
+    assert tagging._fmt_time(hd, minute_ceil=True) == "19:00"
+
+
+def test_tzaisyeshiva_tag_is_after_sunset():
+    ctx = _ctx(datetime(2024, 6, 21, 12, 0, 0))
+    sunset_text = tagging.render_template("#SUNSET", ctx)
+    tzais_text = tagging.render_template("#TZAISYESHIVA", ctx)
+    assert tzais_text.strip()
+    assert tzais_text > sunset_text  # later clock time, same day - string compare works for "HH:MM"
+
+
+def test_tzaisyeshiva_tag_differs_summer_vs_winter_offset_from_sunset():
+    # Summer (day > 12h): tzais should be MORE than 18 minutes after
+    # sunset (18 "zmanis"/proportional minutes, which run longer than
+    # real minutes on a long day). Winter (day <= 12h): exactly 18 fixed
+    # real minutes after sunset. Checked directly via pyzmanim (not just
+    # string comparison) since minute-level text rendering can't easily
+    # distinguish "exactly 18" from "a bit more than 18".
+    from pyzmanim import zmanim
+    from pyzmanim.hebrewcalendar import hdate_gregorian
+
+    summer_ctx = _ctx(datetime(2024, 6, 21, 12, 0, 0))
+    winter_ctx = _ctx(datetime(2024, 12, 21, 12, 0, 0))
+
+    summer_sunset = hdate_gregorian(zmanim.getsunset(summer_ctx.now, JERUSALEM))
+    summer_tzais = hdate_gregorian(zmanim.gettzaisyeshiva(summer_ctx.now, JERUSALEM))
+    winter_sunset = hdate_gregorian(zmanim.getsunset(winter_ctx.now, JERUSALEM))
+    winter_tzais = hdate_gregorian(zmanim.gettzaisyeshiva(winter_ctx.now, JERUSALEM))
+
+    summer_delta = (summer_tzais - summer_sunset).total_seconds() / 60
+    winter_delta = (winter_tzais - winter_sunset).total_seconds() / 60
+    assert summer_delta > 18
+    assert abs(winter_delta - 18) < 0.01
+
+
 def test_render_template_offset_changes_result():
     ctx = _ctx(datetime(2024, 6, 21, 12, 0, 0))
     base = tagging.render_template("#SUNSET", ctx)
