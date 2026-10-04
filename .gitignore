@@ -18,3 +18,8 @@ env/
 *.swp
 Thumbs.db
 .DS_Store
+
+# mg_sync - experimental old-signage prayer-times scraper, not ready to
+# commit yet (also may contain copied browser profile data/cookies - must
+# NEVER be committed).
+mg_sync/
