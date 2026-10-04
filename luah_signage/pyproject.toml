@@ -7,6 +7,7 @@ name = "luah-signage"
 version = "0.1.0"
 description = "LibreOffice Impress (python-uno) digital signage app for zmanim, built on pyzmanim"
 requires-python = ">=3.10"
+license = { text = "LGPL-2.1" }
 dependencies = [
     "tzdata; sys_platform == 'win32'",
 ]
