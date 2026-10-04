@@ -746,6 +746,7 @@ class PresentationController:
             self.config.cmd_tag_executable,
             self._cmd_arg_keys,
             self.config.cmd_tag_timeout_seconds,
+            self.config.cmd_tag_global_args,
         )
 
     # -- slideshow --------------------------------------------------------

@@ -94,6 +94,7 @@ def test_cmd_tag_defaults():
         config = load_config(path)
         assert config.cmd_tag_executable is None
         assert config.cmd_tag_timeout_seconds == 10.0
+        assert config.cmd_tag_global_args == []
         assert config.cmd_tick_seconds == 300.0
 
 
@@ -103,12 +104,24 @@ def test_cmd_tag_overrides():
             Path(tmp),
             cmd_tag_executable="python foo.py",
             cmd_tag_timeout_seconds=5.0,
+            cmd_tag_global_args="--shared-flag",
             cmd_tick_seconds=60.0,
         )
         config = load_config(path)
         assert config.cmd_tag_executable == "python foo.py"
         assert config.cmd_tag_timeout_seconds == 5.0
+        assert config.cmd_tag_global_args == "--shared-flag"
         assert config.cmd_tick_seconds == 60.0
+
+
+def test_cmd_tag_global_args_as_json_list():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _write_config(
+            Path(tmp),
+            cmd_tag_global_args=["--sep", " - ", "--swap"],
+        )
+        config = load_config(path)
+        assert config.cmd_tag_global_args == ["--sep", " - ", "--swap"]
 
 
 if __name__ == "__main__":

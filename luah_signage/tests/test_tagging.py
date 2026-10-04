@@ -226,6 +226,75 @@ def test_refresh_cmd_cache_appends_tag_args_after_configured_prefix():
     assert cache['-a "b c" d'].strip() == "-a b c d"
 
 
+def test_refresh_cmd_cache_global_args_applied_to_every_key():
+    import sys
+
+    cmd = f'"{sys.executable}" -c "import sys; print(\' \'.join(sys.argv[1:]))"'
+    cache: dict[str, str] = {}
+    tagging.refresh_cmd_cache(cache, cmd, {"one", "two"}, global_args="--shared-flag")
+    assert cache["one"].strip() == "--shared-flag one"
+    assert cache["two"].strip() == "--shared-flag two"
+
+
+def test_refresh_cmd_cache_global_args_come_before_tag_args():
+    import sys
+
+    cmd = f'"{sys.executable}" -c "import sys; print(\' \'.join(sys.argv[1:]))"'
+    cache: dict[str, str] = {}
+    tagging.refresh_cmd_cache(cache, cmd, {"tag-arg"}, global_args='--global "g val"')
+    assert cache["tag-arg"].strip() == "--global g val tag-arg"
+
+
+def test_refresh_cmd_cache_empty_global_args_is_a_noop():
+    import sys
+
+    cmd = f'"{sys.executable}" -c "import sys; print(\' \'.join(sys.argv[1:]))"'
+    cache: dict[str, str] = {}
+    tagging.refresh_cmd_cache(cache, cmd, {"foo"}, global_args="")
+    assert cache["foo"].strip() == "foo"
+
+
+def test_refresh_cmd_cache_empty_list_global_args_is_a_noop():
+    import sys
+
+    cmd = f'"{sys.executable}" -c "import sys; print(\' \'.join(sys.argv[1:]))"'
+    cache: dict[str, str] = {}
+    tagging.refresh_cmd_cache(cache, cmd, {"foo"}, global_args=[])
+    assert cache["foo"].strip() == "foo"
+
+
+def test_refresh_cmd_cache_list_global_args_passed_verbatim_no_quote_stripping():
+    import sys
+
+    cmd = f'"{sys.executable}" -c "import sys; print(repr(sys.argv[1:]))"'
+    cache: dict[str, str] = {}
+    # A JSON-list global_args item containing a space must arrive as ONE
+    # argv entry with the space intact - no shell-like splitting/quote
+    # stripping applied to list items at all (unlike the string form).
+    tagging.refresh_cmd_cache(cache, cmd, {"tag"}, global_args=["--sep", " - ", "--swap"])
+    assert cache["tag"].strip() == repr(["--sep", " - ", "--swap", "tag"])
+
+
+def test_normalize_global_args_none_and_empty_variants():
+    assert tagging._normalize_global_args(None) == []
+    assert tagging._normalize_global_args("") == []
+    assert tagging._normalize_global_args([]) == []
+
+
+def test_normalize_global_args_string_is_shell_parsed():
+    assert tagging._normalize_global_args('--sep "a b"') == ["--sep", "a b"]
+
+
+def test_normalize_global_args_list_is_used_verbatim():
+    assert tagging._normalize_global_args(["--sep", " - ", "--swap"]) == ["--sep", " - ", "--swap"]
+
+
+def test_normalize_global_args_list_does_not_strip_quote_characters():
+    # Unlike the string form, a literal quote character inside a list item
+    # is NOT stripped - it's part of the argv entry's actual value.
+    assert tagging._normalize_global_args(["--sep=' - '"]) == ["--sep=' - '"]
+
+
 def test_refresh_cmd_cache_resolves_multiple_keys_independently():
     import sys
 

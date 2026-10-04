@@ -147,25 +147,65 @@ def _parse_shell_like_args(raw: str) -> list[str]:
     return args
 
 
-def _run_cmd_tag(cmd_executable: str | None, raw_args: str | None, timeout_seconds: float) -> str:
-    """Runs the configured ``cmd_tag_executable`` (see LuahConfig's
-    docstring in config.py) with the ``#CMD:<...>`` tag's parsed args
-    appended, and returns its stdout (used as the cached value for that
-    args-key - see module docstring for the cache-based design; this
-    function is called from ``refresh_cmd_cache``, NOT from
-    ``render_template`` directly).
+def _normalize_global_args(global_args) -> list[str]:
+    """Normalizes ``cmd_tag_global_args`` (from ``config.json``) into a
+    plain list of literal argv entries.
 
-    Security note: both ``cmd_executable``'s own shell-like-split prefix
-    and the per-call args are passed to subprocess.run as a plain argv
-    LIST (never ``shell=True``, never string-concatenated into a shell
-    command line) - so shell metacharacters in a shape's ``#CMD:<...>``
-    text (which, per this project's whole design, ANY shul member can
-    author via their phone's PowerPoint app) can never be interpreted as
-    shell syntax/command injection. The configured executable itself is
-    still responsible for safely handling whatever argv values it
-    receives - this only protects against shell injection at the
-    OS-process-launch boundary, not against anything the target script
-    itself might do with its own arguments.
+    Two accepted forms:
+    - A JSON LIST of strings (the recommended form) - each item is used
+      VERBATIM as one argv entry, with NO shell-like quote/whitespace
+      parsing applied at all - e.g. ``["--sep", " - ", "--swap"]`` passes
+      exactly those 3 argv entries, including the literal " - " with its
+      spaces. This is the only form that can express an argument value
+      containing a literal quote character, and avoids any ambiguity
+      about whether quotes in a string would be stripped or not.
+    - A plain STRING (kept for convenience/backward compatibility) -
+      parsed the same shell-like way as a tag's own ``:<args>`` string
+      (via ``_parse_shell_like_args``): whitespace-separated, with
+      quoted spans treated as one arg and their quotes stripped.
+
+    ``None``/``""``/an empty list all normalize to ``[]`` (no extra
+    args)."""
+    if not global_args:
+        return []
+    if isinstance(global_args, str):
+        return _parse_shell_like_args(global_args)
+    return [str(item) for item in global_args]
+
+
+def _run_cmd_tag(
+    cmd_executable: str | None,
+    raw_args: str | None,
+    timeout_seconds: float,
+    global_args="",
+) -> str:
+    """Runs the configured ``cmd_tag_executable`` (see LuahConfig's
+    docstring in config.py) with ``global_args`` (from ``config.json``'s
+    ``cmd_tag_global_args`` - applied to EVERY #CMD invocation regardless
+    of which tag/args-key triggered it; see ``_normalize_global_args`` for
+    the accepted JSON-list-vs-string forms) followed by the
+    ``#CMD:<...>`` tag's OWN parsed args appended, and returns the
+    command's stdout (used as the cached value for that args-key - see
+    module docstring for the cache-based design; this function is called
+    from ``refresh_cmd_cache``, NOT from ``render_template`` directly).
+    Final argv order: cmd_executable's own prefix, then global_args, then
+    the tag's own args - so a tag's own args are appended LAST and can
+    effectively override/extend a global flag if the target script's own
+    argument parser treats a later occurrence of the same flag as
+    winning (e.g. argparse does, for most flag types).
+
+    Security note: cmd_executable's own shell-like-split prefix, the
+    configured global_args, and the per-call tag args are ALL passed to
+    subprocess.run as a single plain argv LIST (never ``shell=True``,
+    never string-concatenated into a shell command line) - so shell
+    metacharacters in a shape's ``#CMD:<...>`` text (which, per this
+    project's whole design, ANY shul member can author via their phone's
+    PowerPoint app) can never be interpreted as shell syntax/command
+    injection. The configured executable itself is still responsible for
+    safely handling whatever argv values it receives - this only
+    protects against shell injection at the OS-process-launch boundary,
+    not against anything the target script itself might do with its own
+    arguments.
 
     Never raises - any failure (missing config, bad executable, timeout,
     non-zero exit, OS error) is caught and turned into a short, visible
@@ -181,7 +221,7 @@ def _run_cmd_tag(cmd_executable: str | None, raw_args: str | None, timeout_secon
     if not base_argv:
         return "[#CMD: cmd_tag_executable is empty]"
 
-    argv = base_argv + _parse_shell_like_args(raw_args or "")
+    argv = base_argv + _normalize_global_args(global_args) + _parse_shell_like_args(raw_args or "")
     # Force the child process's own stdout/stderr text encoding to UTF-8
     # regardless of the OS console code page - without this, a Python (or
     # similar) script's own print() calls can be silently mis-encoded on
@@ -240,15 +280,18 @@ def refresh_cmd_cache(
     cmd_executable: str | None,
     arg_keys: Iterable[str],
     timeout_seconds: float = 10.0,
+    global_args="",
 ) -> None:
     """Runs the configured command ONCE per distinct args-key in
     ``arg_keys`` (as found by ``find_cmd_arg_keys``) and stores each
     result into ``cache`` (mutated in place, keyed by the same args-key
-    strings that ``render_template``'s ``#CMD`` handling looks up). Meant
-    to be called on its own, infrequent tick (see module docstring) -
-    NOT from the main per-tick content refresh."""
+    strings that ``render_template``'s ``#CMD`` handling looks up).
+    ``global_args`` (a JSON list of literal argv entries, or a shell-like
+    string - see ``_normalize_global_args``) is applied identically to
+    every key. Meant to be called on its own, infrequent tick (see module
+    docstring) - NOT from the main per-tick content refresh."""
     for key in arg_keys:
-        cache[key] = _run_cmd_tag(cmd_executable, key, timeout_seconds)
+        cache[key] = _run_cmd_tag(cmd_executable, key, timeout_seconds, global_args)
 
 
 def _fmt_time(hd, offset_minutes: int = 0) -> str:

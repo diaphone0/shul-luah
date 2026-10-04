@@ -212,6 +212,35 @@ class LuahConfig:
     # docstring above. Exceeding it stores a "[#CMD: timed out ...]"
     # placeholder into the cache instead of hanging indefinitely.
     cmd_tag_timeout_seconds: float = 10.0
+    # Extra argv entries applied to EVERY #CMD invocation, regardless of
+    # which tag/args-key triggered it - e.g. a shared flag every call
+    # should always get (an API key, a --cache-file override, etc.)
+    # without having to repeat it in every single shape's "#CMD:<...>"
+    # text. Final argv order is cmd_tag_executable's own prefix, THEN
+    # these global args, THEN the tag's own args - so a tag's own args
+    # are appended last and can override a global flag if the target
+    # script's argument parser treats a later occurrence as winning (true
+    # for most argparse-based tools).
+    #
+    # Accepts two forms in config.json:
+    # - A JSON LIST of strings (RECOMMENDED) - each item is used VERBATIM
+    #   as one argv entry, e.g. ["--sep", " - ", "--swap"] passes exactly
+    #   those 3 argv entries, including the literal " - " with its
+    #   spaces. NO shell-like quote/whitespace parsing is applied to list
+    #   items at all - this is the only form that can express an
+    #   argument value containing a literal quote character, and it
+    #   avoids any ambiguity about whether quotes typed inside a JSON
+    #   string would be stripped (they would NOT be - e.g. the JSON list
+    #   item "--sep=' - '" would be passed to the target script with
+    #   those single-quote characters literally included, almost
+    #   certainly NOT what you want - use ["--sep", " - "] or
+    #   ["--sep= - "] instead).
+    # - A plain STRING (kept for convenience/backward compatibility) -
+    #   parsed the same shell-like way as a tag's own ":<...>" args
+    #   (whitespace-separated, quoted spans count as one arg, quotes
+    #   stripped) - see tagging._parse_shell_like_args.
+    # Defaults to [] (no extra args at all) either way.
+    cmd_tag_global_args: list[str] | str = field(default_factory=list)
     # How often (seconds) the #CMD cache is actually refreshed by
     # re-running cmd_tag_executable for every distinct args-key found in
     # the current deck - see cmd_tag_executable's PERFORMANCE NOTE above
@@ -282,5 +311,6 @@ def load_config(path: Path | None = None) -> LuahConfig:
         debug_repaint_nudge_shape=data.get("debug_repaint_nudge_shape", False),
         cmd_tag_executable=data.get("cmd_tag_executable"),
         cmd_tag_timeout_seconds=data.get("cmd_tag_timeout_seconds", 10.0),
+        cmd_tag_global_args=data.get("cmd_tag_global_args", []),
         cmd_tick_seconds=data.get("cmd_tick_seconds", 300.0),
     )

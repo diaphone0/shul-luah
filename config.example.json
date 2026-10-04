@@ -2,7 +2,7 @@
   "_comment": "Copy this file to config.json (next to it) and edit for your site. pptx_path accepts forward slashes on every OS (e.g. Windows: 'C:/luah/luah.pptx', Linux: '/home/pi/luah/luah.pptx') - point it at wherever your cloud-sync client keeps the file. Leave pptx_path empty/null, or pointed at a path that doesn't exist/isn't accessible, to default to 'luah.pptx' next to launch.py.",
   "_comment_mock_start_datetime": "FOR TESTING ONLY: set to an ISO-8601 datetime string (e.g. '2026-09-25T14:30:00') to simulate the clock starting at that date/time (advancing normally from there) instead of using the real system clock - useful for testing zmanim/#CHOLONLY/#NONCHOLONLY behavior on a specific day without changing the OS clock. Leave null for normal/production use.",
   "_comment_debug_repaint": "FOR DEBUGGING ONLY: each debug_repaint_* flag independently disables one anti-flicker tweak, to help isolate which one (if any) causes frozen/non-updating clock hands on a particular machine. Leave all at their defaults for normal/production use.",
-  "_comment_cmd_tag": "cmd_tag_executable configures the '#CMD:<args>' tag - a shell-like command-line string (e.g. 'python C:/Intel/luahnew/mg_sync/fetch_prayer_times.py'). Use forward slashes in paths. Leave null to leave #CMD unconfigured (renders as an empty string instead of failing). #CMD never runs inline - it only reads from a cache that's refreshed every cmd_tick_seconds (default 300s = 5 min), deliberately separate from content_tick_seconds, to avoid hammering a possibly slow/rate-limited external command every 30s. See LuahConfig.cmd_tag_executable's docstring in config.py for full security/performance notes.",
+  "_comment_cmd_tag": "cmd_tag_executable configures the '#CMD:<args>' tag - a shell-like command-line string (e.g. 'python C:/Intel/luahnew/mg_sync/fetch_prayer_times.py'). Use forward slashes in paths. Leave null to leave #CMD unconfigured (renders as an empty string instead of failing). cmd_tag_global_args is extra argv entries applied to EVERY #CMD invocation regardless of args-key (appended after cmd_tag_executable's own prefix, before each tag's own args) - useful for a flag every call should always get. Give it as a JSON LIST of strings (each item used verbatim as one argv entry, e.g. [\"--sep\", \" - \", \"--swap\"] - no quote characters needed/no shell parsing applied), or a shell-like string for convenience. #CMD never runs inline - it only reads from a cache that's refreshed every cmd_tick_seconds (default 300s = 5 min), deliberately separate from content_tick_seconds, to avoid hammering a possibly slow/rate-limited external command every 30s. See LuahConfig.cmd_tag_executable's docstring in config.py for full security/performance notes.",
   "pptx_path": "C:/luah/luah.pptx",
   "location": {
     "latitude": 32.06,
@@ -27,6 +27,7 @@
   "debug_repaint_nudge_shape": false,
   "cmd_tag_executable": null,
   "cmd_tag_timeout_seconds": 10.0,
+  "cmd_tag_global_args": [],
   "cmd_tick_seconds": 300.0,
   "clock_style": {
     "hour_length_ratio": 0.5,

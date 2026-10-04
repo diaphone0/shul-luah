@@ -147,7 +147,12 @@ Then just run `python launch.py`.
   reads from an in-memory cache, refreshed on its own separate, much less frequent tick
   (`cmd_tick_seconds`, default 300s/5min) — deliberately decoupled from `content_tick_seconds`
   (default 30s) to avoid hammering a possibly slow/rate-limited external command every 30 seconds
-  forever. See `cmd_tag_executable`'s docstring in `config.py` for the full design rationale.
+  forever. `cmd_tag_global_args` (default `[]`) applies extra argv entries to EVERY `#CMD`
+  invocation regardless of args-key — e.g. a shared flag every call should always get — appended
+  after `cmd_tag_executable`'s own prefix but before each tag's own args. Give it as a JSON list
+  of strings (recommended — each item used verbatim, e.g. `["--sep", " - ", "--swap"]`, no quote
+  characters needed) or a shell-like string for convenience. See `cmd_tag_executable`'s docstring
+  in `config.py` for the full design rationale.
 
 ## Known-tricky UNO gotchas learned the hard way
 
