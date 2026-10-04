@@ -332,6 +332,20 @@ class PresentationController:
         # See LuahConfig.debug_slide_advance's docstring.
         self._debug = config.debug_slide_advance
         self._debug_last_clock_log_index: object = "unset"
+        # #CMD tag support (see tagging.py's module docstring for the
+        # full cache-based design): maps a #CMD tag's normalized args-key
+        # string -> that command's last-resolved stdout. Populated/
+        # refreshed by refresh_cmd_tags (its own, infrequent tick - see
+        # app.py), NEVER by refresh_content/render_template directly.
+        # Deliberately NOT reset on reload (see _close_document) so a
+        # previously-resolved value stays visible across a reload instead
+        # of the tag going blank again while waiting for the next
+        # (possibly many-minutes-away) cmd-refresh tick.
+        self._cmd_cache: dict[str, str] = {}
+        # Distinct #CMD args-keys found in the CURRENTLY loaded deck's
+        # tracked shapes (recomputed fresh on every _prepare_document) -
+        # this is what refresh_cmd_tags actually iterates over.
+        self._cmd_arg_keys: set[str] = set()
 
     # -- loading ------------------------------------------------------
     def load(self) -> None:
@@ -413,6 +427,10 @@ class PresentationController:
         self._clock_suppressed = None
         self._pending_transition_slide_index = None
         self._last_known_slide_index = None
+        self._cmd_arg_keys = set()
+        # NOTE: self._cmd_cache is intentionally NOT reset here - see its
+        # field docstring in __init__ for why previously-resolved #CMD
+        # values should survive a reload.
 
     # -- scanning -------------------------------------------------------
     def _prepare_document(self) -> None:
@@ -471,6 +489,8 @@ class PresentationController:
                 timezone=self.config.timezone,
             )
             self._apply_day_mode_visibility(ctx.today_is_chol)
+
+        self._cmd_arg_keys = tagging.find_cmd_arg_keys(t.template for t in self.tracked_shapes)
 
         self._warm_up_slides()
         self._log_prepare_summary()
@@ -595,7 +615,8 @@ class PresentationController:
             f"{len(self._slides_by_index)} slide(s), "
             f"{len(self.tracked_shapes)} tagged text shape(s), "
             f"{len(self.clocks)} analog clock(s), "
-            f"{chol_only} chol-only slide(s), {noncholonly} non-chol-only slide(s)."
+            f"{chol_only} chol-only slide(s), {noncholonly} non-chol-only slide(s), "
+            f"{len(self._cmd_arg_keys)} distinct #CMD arg key(s)."
         )
         for tracked in self.tracked_shapes:
             preview = tracked.template.replace("\n", " \\n ")
@@ -702,12 +723,30 @@ class PresentationController:
                 self.document.lockControllers()
             try:
                 for tracked in self.tracked_shapes:
-                    tracked.refresh(ctx)
+                    tracked.refresh(ctx, cmd_cache=self._cmd_cache)
             finally:
                 if use_lock:
                     self.document.unlockControllers()
         if self._slide_day_mode:
             self._apply_day_mode_visibility(ctx.today_is_chol)
+
+    def refresh_cmd_tags(self) -> None:
+        """Runs the configured #CMD command once for each distinct
+        args-key found in the currently-loaded deck, updating
+        self._cmd_cache in place - called on its OWN, much-less-frequent
+        tick (config.cmd_tick_seconds, default 300s) from app.py's main
+        loop, deliberately SEPARATE from refresh_content's tick (see
+        tagging.py's module docstring and LuahConfig.cmd_tag_executable's
+        PERFORMANCE NOTE for why). A no-op if no shape in the deck uses a
+        #CMD tag at all."""
+        if not self._cmd_arg_keys:
+            return
+        tagging.refresh_cmd_cache(
+            self._cmd_cache,
+            self.config.cmd_tag_executable,
+            self._cmd_arg_keys,
+            self.config.cmd_tag_timeout_seconds,
+        )
 
     # -- slideshow --------------------------------------------------------
     def is_alive(self) -> bool:

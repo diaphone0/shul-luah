@@ -166,12 +166,79 @@ class LuahConfig:
     # try this if disabling the other debug_repaint_* toggles individually
     # doesn't resolve the frozen-hands symptom on a given machine.
     debug_repaint_nudge_shape: bool = False
+    # Path/command-line for the "#CMD:<args>" tag (see tagging.py's module
+    # docstring): a shell-like string (shlex-split) giving the command to
+    # run - e.g. a direct executable path, OR an interpreter + script path
+    # for script-based tools (e.g. "python C:/Intel/luahnew/mg_sync/
+    # fetch_prayer_times.py"). Use FORWARD slashes in paths here, same
+    # convention as pptx_path above - this string is parsed with Python's
+    # shlex (shell-like quoting/whitespace rules), which treats a backslash
+    # as an escape character and would otherwise mangle a literal Windows
+    # path. Quote any path segment containing spaces (e.g. a quoted
+    # "C:/Program Files/..." segment). Any args captured after the tag's
+    # own ":<...>" suffix (e.g. "#CMD:<-city tzfat>" -> ["-city", "tzfat"])
+    # are appended AFTER this prefix's own argv entries. Leave None (the
+    # default) to leave #CMD unconfigured - its tag(s) will then render as
+    # an empty string (not an error) until configured - see
+    # tagging.py's module docstring for why #CMD always renders from a
+    # cache rather than running inline.
+    #
+    # SECURITY NOTE: the configured command is run via subprocess with a
+    # plain argv list (never shell=True / string concatenation), so shell
+    # metacharacters typed into a shape's "#CMD:<...>" text (which, per
+    # this whole project's design, ANY shul member can author via their
+    # phone's PowerPoint app) can never be interpreted as shell syntax -
+    # but whatever you point this at is still fully trusted to run with
+    # whatever argv values a shape's author chooses to type; only point
+    # this at a script/tool you're comfortable having anyone who can edit
+    # the deck effectively invoke with arbitrary arguments.
+    #
+    # PERFORMANCE NOTE: #CMD does NOT run on the main content-refresh tick
+    # (content_tick_seconds) at all - it only ever reads from an
+    # in-memory cache populated by a SEPARATE, much less frequent tick
+    # (see cmd_tick_seconds below). This is specifically to avoid
+    # invoking a possibly slow/network-bound command every
+    # content_tick_seconds (default 30s) - repeated requests that often,
+    # forever, risks tripping rate limits/blocks on whatever remote
+    # service the configured command might call. The cmd-refresh tick
+    # ITSELF still runs synchronously/blocking (no background threads
+    # anywhere in this app) for up to cmd_tag_timeout_seconds PER distinct
+    # args-key found in the deck, so it still briefly stalls clock/slide-
+    # advance updates when it fires - just far less often than every
+    # content refresh. Keep the configured command reasonably fast
+    # regardless.
+    cmd_tag_executable: str | None = None
+    # Timeout (seconds) for each #CMD invocation - see cmd_tag_executable's
+    # docstring above. Exceeding it stores a "[#CMD: timed out ...]"
+    # placeholder into the cache instead of hanging indefinitely.
+    cmd_tag_timeout_seconds: float = 10.0
+    # How often (seconds) the #CMD cache is actually refreshed by
+    # re-running cmd_tag_executable for every distinct args-key found in
+    # the current deck - see cmd_tag_executable's PERFORMANCE NOTE above
+    # for why this is deliberately decoupled from content_tick_seconds
+    # and defaults to a much longer interval (5 minutes). Has no effect
+    # at all if no shape in the deck uses a #CMD tag.
+    cmd_tick_seconds: float = 300.0
 
 
 def _resolve_pptx_path(raw: str | None) -> Path:
+    """Resolves config.json's "pptx_path" value to an actual Path, falling
+    back to DEFAULT_PPTX_PATH (luah.pptx next to launch.py) if the raw
+    value is missing/empty OR if it doesn't point to an actually-existing,
+    readable file (e.g. a typo'd path, a path on a drive that isn't
+    mounted on this particular machine, or a permissions issue) - rather
+    than failing later with a much less obvious error from deep inside
+    shutil.copy2/LibreOffice's own file-open call in presentation.py's
+    load(). Path.is_file() returns False (rather than raising) for a
+    missing path, a path that exists but isn't a regular file, AND for a
+    permission error during the check itself - all three collapse to the
+    same "fall back to the default" behavior here."""
     if not raw:
         return DEFAULT_PPTX_PATH
-    return Path(raw)
+    path = Path(raw)
+    if not path.is_file():
+        return DEFAULT_PPTX_PATH
+    return path
 
 
 def load_config(path: Path | None = None) -> LuahConfig:
@@ -213,4 +280,7 @@ def load_config(path: Path | None = None) -> LuahConfig:
             "debug_repaint_update_offscreen_clocks", True
         ),
         debug_repaint_nudge_shape=data.get("debug_repaint_nudge_shape", False),
+        cmd_tag_executable=data.get("cmd_tag_executable"),
+        cmd_tag_timeout_seconds=data.get("cmd_tag_timeout_seconds", 10.0),
+        cmd_tick_seconds=data.get("cmd_tick_seconds", 300.0),
     )

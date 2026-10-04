@@ -37,9 +37,29 @@ def test_empty_string_pptx_path_defaults_to_repo_root_luah_pptx():
 
 def test_explicit_pptx_path_is_respected():
     with tempfile.TemporaryDirectory() as tmp:
-        path = _write_config(Path(tmp), pptx_path="C:/somewhere/custom.pptx")
+        # Must point at an actually-existing file - _resolve_pptx_path falls
+        # back to DEFAULT_PPTX_PATH for a path that doesn't exist (see
+        # test_nonexistent_pptx_path_defaults_to_repo_root_luah_pptx below).
+        real_pptx = Path(tmp) / "custom.pptx"
+        real_pptx.write_bytes(b"not a real pptx, just needs to exist")
+        path = _write_config(Path(tmp), pptx_path=str(real_pptx))
         config = load_config(path)
-        assert config.pptx_path == Path("C:/somewhere/custom.pptx")
+        assert config.pptx_path == real_pptx
+
+
+def test_nonexistent_pptx_path_defaults_to_repo_root_luah_pptx():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _write_config(Path(tmp), pptx_path="C:/this/path/does/not/exist.pptx")
+        config = load_config(path)
+        assert config.pptx_path == DEFAULT_PPTX_PATH
+
+
+def test_pptx_path_pointing_at_a_directory_defaults_to_repo_root_luah_pptx():
+    with tempfile.TemporaryDirectory() as tmp:
+        # A directory, not a file - is_file() returns False for this too.
+        path = _write_config(Path(tmp), pptx_path=tmp)
+        config = load_config(path)
+        assert config.pptx_path == DEFAULT_PPTX_PATH
 
 
 def test_debug_repaint_defaults():
@@ -66,6 +86,29 @@ def test_debug_repaint_overrides():
         assert config.debug_repaint_skip_unchanged_clock_writes is False
         assert config.debug_repaint_update_offscreen_clocks is False
         assert config.debug_repaint_nudge_shape is True
+
+
+def test_cmd_tag_defaults():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _write_config(Path(tmp))
+        config = load_config(path)
+        assert config.cmd_tag_executable is None
+        assert config.cmd_tag_timeout_seconds == 10.0
+        assert config.cmd_tick_seconds == 300.0
+
+
+def test_cmd_tag_overrides():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _write_config(
+            Path(tmp),
+            cmd_tag_executable="python foo.py",
+            cmd_tag_timeout_seconds=5.0,
+            cmd_tick_seconds=60.0,
+        )
+        config = load_config(path)
+        assert config.cmd_tag_executable == "python foo.py"
+        assert config.cmd_tag_timeout_seconds == 5.0
+        assert config.cmd_tick_seconds == 60.0
 
 
 if __name__ == "__main__":

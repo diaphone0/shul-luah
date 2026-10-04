@@ -138,6 +138,16 @@ Then just run `python launch.py`.
   `_apply_day_mode_visibility()` (sets Impress's `slide.Visible` property).
 - **Mockable time** (`time_source.py`): `MockTimeSource` lets you test any date/time scenario
   without touching the OS clock — 1 real second = 1 simulated second, no acceleration.
+- **`#CMD:<args>` tag** (`tagging.py`): runs an externally configured script/command (set once in
+  `config.json`'s `cmd_tag_executable`) and substitutes the tag with that command's stdout —
+  e.g. `#CMD:<chol>` passes `chol` as an argv entry. Args are parsed shell-like (whitespace-
+  separated, quoted spans count as one arg) and always passed as a plain argv list (never a shell
+  string), so shell metacharacters typed into a shape's tag text can't be interpreted as shell
+  syntax. Unlike every other tag, `#CMD` is never run inline during a content refresh — it only
+  reads from an in-memory cache, refreshed on its own separate, much less frequent tick
+  (`cmd_tick_seconds`, default 300s/5min) — deliberately decoupled from `content_tick_seconds`
+  (default 30s) to avoid hammering a possibly slow/rate-limited external command every 30 seconds
+  forever. See `cmd_tag_executable`'s docstring in `config.py` for the full design rationale.
 
 ## Known-tricky UNO gotchas learned the hard way
 
@@ -187,9 +197,10 @@ install by testing `import <pkg>` from an unrelated directory.
 `#HEBDATE`, `#PARSHA`, `#DAFYOMI`, `#LIMUDYOMI`, `#DAYZMANIM`, `#FULLZMANIM`, `#ALOS72`,
 `#SUNRISE`, `#SHMAGRA`, `#SHMAMGA`, `#TFILAGRA`, `#TFILAMGA`, `#CHAZOT`, `#BGMINHA`, `#LTMINHA`,
 `#SUNSET`, `#TZAIS`, `#SHABBOS`, `#MOZASH`, `#DICLOCK`. Most accept an optional `+N`/`-N` (minutes)
-or `+HH:MM`/`-HH:MM` offset suffix, e.g. `#SUNSET-01:30`. Special non-text tags: `#ANCLOCK`
-(analog clock), `#CHOLONLY`/`#NONCHOLONLY` (day-mode slide visibility), `#MULTIMODE` (deprecated/
-inert, kept only for backward compat).
+or `+HH:MM`/`-HH:MM` offset suffix, e.g. `#SUNSET-01:30`. `#CMD:<args>` runs a configured external
+command and substitutes its stdout (see `cmd_tag_executable` in `config.example.json`). Special
+non-text tags: `#ANCLOCK` (analog clock), `#CHOLONLY`/`#NONCHOLONLY` (day-mode slide visibility),
+`#MULTIMODE` (deprecated/inert, kept only for backward compat).
 
 ## Test suite
 

@@ -64,6 +64,14 @@ def _connect_and_load(config: LuahConfig, time_source: TimeSource) -> Presentati
     controller = PresentationController(config, ctx, time_source)
     controller.load()
     controller.start_slideshow()
+    # Populate the #CMD cache once, right away - WITHOUT this, any #CMD tag
+    # would render as an empty string for the entire first content_tick_
+    # seconds interval (the main loop's cmd-refresh tick also fires on its
+    # own first iteration - see run()'s last_cmd_refresh=0.0 - but that
+    # happens AFTER refresh_content already ran blank on that same first
+    # tick, so the resolved value wouldn't actually reach the display
+    # until the SECOND content refresh without this upfront call).
+    controller.refresh_cmd_tags()
     return controller
 
 
@@ -81,6 +89,12 @@ def run(config: LuahConfig) -> None:
     watcher = FileChangeWatcher(config.pptx_path)
     last_content_refresh = 0.0
     last_reload_check = 0.0
+    # Set to "now" (not 0.0, unlike the other last_*_refresh trackers) -
+    # _connect_and_load already ran refresh_cmd_tags() once immediately
+    # above, so the in-loop cmd-tick check should wait a FULL
+    # cmd_tick_seconds from here before refreshing again, rather than
+    # firing again right away on the very first loop iteration.
+    last_cmd_refresh = time.monotonic()
     recovery_backoff = _RECOVERY_BACKOFF_SECONDS
 
     try:
@@ -123,6 +137,19 @@ def run(config: LuahConfig) -> None:
                         controller.reload()
                     last_reload_check = loop_time
 
+                # Deliberately on its OWN, much-less-frequent tick
+                # (cmd_tick_seconds, default 300s) rather than piggy-
+                # backing on content_tick_seconds - see tagging.py's
+                # module docstring and LuahConfig.cmd_tag_executable's
+                # PERFORMANCE NOTE for why: running a possibly slow/
+                # network-bound #CMD command every content_tick_seconds
+                # (default 30s), forever, risks tripping rate limits on
+                # whatever remote service it calls. A no-op if the deck
+                # has no #CMD tags at all.
+                if loop_time - last_cmd_refresh >= config.cmd_tick_seconds:
+                    controller.refresh_cmd_tags()
+                    last_cmd_refresh = loop_time
+
                 recovery_backoff = _RECOVERY_BACKOFF_SECONDS  # reset after a healthy tick
                 time.sleep(config.clock_tick_seconds)
             except KeyboardInterrupt:
@@ -150,6 +177,7 @@ def run(config: LuahConfig) -> None:
                     controller = _connect_and_load(config, time_source)
                     last_content_refresh = 0.0
                     last_reload_check = 0.0
+                    last_cmd_refresh = time.monotonic()  # see run()'s matching comment above
                 except Exception:
                     print("luah_signage: recovery attempt failed, will retry.")
                     traceback.print_exc()

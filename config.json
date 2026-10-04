@@ -1,5 +1,5 @@
 {
-  "pptx_path": "C:/Intel/luahnew/luah.pptx",
+  "pptx_path": "",
   "location": {
     "latitude": 32.06,
     "longitude": 35.26,
@@ -22,6 +22,9 @@
   "debug_repaint_skip_unchanged_clock_writes": true,
   "debug_repaint_update_offscreen_clocks": true,
   "debug_repaint_nudge_shape": false,
+  "cmd_tag_executable": "python C:/Intel/luahnew/mg_sync/fetch_prayer_times.py",
+  "cmd_tag_timeout_seconds": 10.0,
+  "cmd_tick_seconds": 300.0,
   "clock_style": {
     "hour_length_ratio": 0.5,
     "minute_length_ratio": 0.85,

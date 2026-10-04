@@ -119,6 +119,154 @@ def test_dafyomi_tag_matches_known_start_date():
     assert "ברכות" in text
 
 
+def test_cmd_tag_pattern_captures_args():
+    matches = list(tagging.TAG_PATTERN.finditer('#CMD:<-city "Beit Shemesh" -format json>'))
+    assert len(matches) == 1
+    assert matches[0].group(1) == "CMD"
+    assert matches[0].group(2) is None
+    assert matches[0].group(3) == '-city "Beit Shemesh" -format json'
+
+
+def test_cmd_tag_pattern_with_no_args():
+    matches = list(tagging.TAG_PATTERN.finditer("#CMD"))
+    assert len(matches) == 1
+    assert matches[0].group(1) == "CMD"
+    assert matches[0].group(3) is None
+
+
+def test_parse_shell_like_args_plain_whitespace():
+    assert tagging._parse_shell_like_args("foo bar baz") == ["foo", "bar", "baz"]
+
+
+def test_parse_shell_like_args_double_quoted_span():
+    assert tagging._parse_shell_like_args('-city "Beit Shemesh" -format json') == [
+        "-city",
+        "Beit Shemesh",
+        "-format",
+        "json",
+    ]
+
+
+def test_parse_shell_like_args_single_quoted_span():
+    assert tagging._parse_shell_like_args("'single quoted arg' second") == [
+        "single quoted arg",
+        "second",
+    ]
+
+
+def test_parse_shell_like_args_empty_string():
+    assert tagging._parse_shell_like_args("") == []
+
+
+def test_parse_shell_like_args_collapses_extra_whitespace():
+    assert tagging._parse_shell_like_args("  foo    bar  ") == ["foo", "bar"]
+
+
+def test_contains_known_tag_recognizes_cmd_tag():
+    assert tagging.contains_known_tag("#CMD:<foo>")
+    assert tagging.contains_known_tag("#CMD")
+
+
+def test_cmd_tag_with_no_cache_renders_as_empty_string():
+    ctx = _ctx(datetime(2024, 6, 21, 12, 0, 0))
+    text = tagging.render_template("before #CMD:<foo> after", ctx, cmd_cache=None)
+    assert text == "before  after"
+
+
+def test_cmd_tag_with_empty_cache_renders_as_empty_string():
+    ctx = _ctx(datetime(2024, 6, 21, 12, 0, 0))
+    text = tagging.render_template("before #CMD:<foo> after", ctx, cmd_cache={})
+    assert text == "before  after"
+
+
+def test_cmd_tag_reads_from_cache_by_normalized_args_key():
+    ctx = _ctx(datetime(2024, 6, 21, 12, 0, 0))
+    cache = {"foo": "resolved value", "": "no-args value"}
+    assert tagging.render_template("#CMD:<foo>", ctx, cmd_cache=cache) == "resolved value"
+    assert tagging.render_template("#CMD", ctx, cmd_cache=cache) == "no-args value"
+    assert tagging.render_template("#CMD:<>", ctx, cmd_cache=cache) == "no-args value"
+
+
+def test_tracked_shape_refresh_passes_cmd_cache_through():
+    shape = FakeShape("#CMD:<foo>")
+    tracked = tagging.TrackedShape(shape=shape, template="#CMD:<foo>")
+    tracked.refresh(_ctx(datetime(2024, 6, 21, 12, 0, 0)), cmd_cache={"foo": "cached!"})
+    assert shape.get_text() == "cached!"
+
+
+def test_find_cmd_arg_keys_collects_distinct_keys_across_templates():
+    keys = tagging.find_cmd_arg_keys(["#CMD:<chol>", "text #CMD:<shabbos> more", "#CMD", "no tag here"])
+    assert keys == {"chol", "shabbos", ""}
+
+
+def test_find_cmd_arg_keys_ignores_non_cmd_tags():
+    keys = tagging.find_cmd_arg_keys(["#SUNRISE-18", "#PARSHA"])
+    assert keys == set()
+
+
+def test_find_cmd_arg_keys_empty_when_no_templates():
+    assert tagging.find_cmd_arg_keys([]) == set()
+
+
+def test_refresh_cmd_cache_runs_configured_executable_and_substitutes_stdout():
+    import sys
+
+    cmd = f'"{sys.executable}" -c "import sys; print(sys.argv[1])"'
+    cache: dict[str, str] = {}
+    tagging.refresh_cmd_cache(cache, cmd, {"hello-world"})
+    assert cache["hello-world"].strip() == "hello-world"
+
+
+def test_refresh_cmd_cache_appends_tag_args_after_configured_prefix():
+    import sys
+
+    cmd = f'"{sys.executable}" -c "import sys; print(\' \'.join(sys.argv[1:]))"'
+    cache: dict[str, str] = {}
+    tagging.refresh_cmd_cache(cache, cmd, {'-a "b c" d'})
+    assert cache['-a "b c" d'].strip() == "-a b c d"
+
+
+def test_refresh_cmd_cache_resolves_multiple_keys_independently():
+    import sys
+
+    cmd = f'"{sys.executable}" -c "import sys; print(sys.argv[1])"'
+    cache: dict[str, str] = {}
+    tagging.refresh_cmd_cache(cache, cmd, {"one", "two"})
+    assert cache["one"].strip() == "one"
+    assert cache["two"].strip() == "two"
+
+
+def test_refresh_cmd_cache_not_configured_stores_error_placeholder():
+    cache: dict[str, str] = {}
+    tagging.refresh_cmd_cache(cache, None, {"foo"})
+    assert "#CMD" in cache["foo"]
+    assert "not configured" in cache["foo"] or "no cmd_tag_executable" in cache["foo"]
+
+
+def test_refresh_cmd_cache_missing_executable_stores_error_placeholder():
+    cache: dict[str, str] = {}
+    tagging.refresh_cmd_cache(cache, "definitely_not_a_real_executable_xyz", {""})
+    assert "not found" in cache[""]
+
+
+def test_refresh_cmd_cache_nonzero_exit_stores_error_placeholder():
+    import sys
+
+    cmd = f'"{sys.executable}" -c "import sys; sys.exit(3)"'
+    cache: dict[str, str] = {}
+    tagging.refresh_cmd_cache(cache, cmd, {""})
+    assert "exit code 3" in cache[""]
+
+
+def test_refresh_cmd_cache_timeout_stores_error_placeholder():
+    import sys
+
+    cmd = f'"{sys.executable}" -c "import time; time.sleep(5)"'
+    cache: dict[str, str] = {}
+    tagging.refresh_cmd_cache(cache, cmd, {""}, timeout_seconds=0.2)
+    assert "timed out" in cache[""]
+
+
 if __name__ == "__main__":
     import sys
     import traceback

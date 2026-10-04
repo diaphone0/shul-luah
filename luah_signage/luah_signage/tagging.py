@@ -14,6 +14,36 @@ minutes (``+18``, ``-45``), or an ``HH:MM`` duration (``+00:30``,
 just clearer to author. Both forms are equivalent ways of specifying the
 same total-minutes offset - ``+00:30`` and ``+30`` mean the same thing.
 
+``#CMD:<args>`` is a special tag (handled separately from the generic
+TAG_REGISTRY-based tags above): it runs an external script/command
+(configured once, in ``config.json``'s ``cmd_tag_executable``) and
+substitutes the tag with that command's stdout. ``<args>`` (optional) is a
+shell-like argument string - whitespace separates args, a single/double-
+quoted span is one arg (may itself contain spaces) - parsed by
+``_parse_shell_like_args`` and appended as extra argv entries after
+``cmd_tag_executable``'s own (also shell-like-split) prefix. See that
+config field's docstring in config.py for the full behavior/security notes.
+
+``#CMD`` is deliberately NOT executed inline during ``render_template``
+(unlike every other tag, which is cheap pure computation). Running an
+external command/network call on every content-refresh tick
+(``content_tick_seconds``, default every 30s) risked tripping rate
+limits/blocks on whatever remote service the configured command might call
+(e.g. ``mg_sync``'s mygabay.com fetch) - repeated requests every 30s,
+forever, is exactly the kind of pattern that gets flagged/blocked. Instead,
+``#CMD`` results are CACHED in a plain ``dict[str, str]`` keyed by the raw
+``:<args>`` string (normalized: no-args and ``:<>``/missing both map to the
+same ``""`` key) - ``render_template`` only ever READS this cache (never
+runs the subprocess itself), defaulting to ``""`` for a key that hasn't
+been resolved yet (e.g. right after startup, before the first cmd-refresh
+tick has run). A SEPARATE, much-less-frequent tick
+(``PresentationController.refresh_cmd_tags``, driven by
+``config.cmd_tick_seconds`` - default 300s = 5 minutes - from app.py's main
+loop) is what actually invokes ``refresh_cmd_cache`` to run the command
+once per distinct args-key found in the deck and populate/update the
+cache. This cleanly decouples "how often does text get redrawn" from "how
+often does a slow/network-bound external command get invoked".
+
 Unlike the original VBA (which mutated the shape's displayed text in place,
 losing the template unless a separate ORG tag/property was stashed), this
 implementation always keeps the original template text in memory (in
@@ -23,10 +53,13 @@ initial scan.
 """
 from __future__ import annotations
 
+import os
 import re
+import shlex
+import subprocess
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Callable, Protocol
+from typing import Callable, Iterable, Protocol
 
 from pyzmanim import dafyomi, hdateformat, shiur, zmanim
 from pyzmanim.hebrewcalendar import YomTov, Parshah, get_parshah, get_special_shabbos, get_yom_tov, hdate_gregorian
@@ -34,8 +67,22 @@ from pyzmanim.hebrewcalendar import YomTov, Parshah, get_parshah, get_special_sh
 from .zman_context import ZmanContext
 
 # Group 2 matches either "+18"/"-45" (plain minutes) or "+00:30"/"-01:15"
-# (HH:MM duration) - see module docstring.
-TAG_PATTERN = re.compile(r"#([A-Z][A-Z0-9]*)([+-]\d+:\d{2}|[+-]\d+)?")
+# (HH:MM duration) - see module docstring. Group 3 (only meaningful for
+# #CMD) matches a ":<...>" argument-string suffix, e.g. "#CMD:<-city tzfat>"
+# captures "-city tzfat" in group 3. The two suffix forms never collide:
+# group 2 only matches if the character right after the tag name is +/-,
+# group 3 only matches if it's a literal ":<" instead.
+TAG_PATTERN = re.compile(r"#([A-Z][A-Z0-9]*)([+-]\d+:\d{2}|[+-]\d+)?(?::<([^>]*)>)?")
+
+# Tag name handled specially in render_template (does not go through
+# TAG_REGISTRY's uniform (ctx, offset_minutes) -> str signature, since it
+# needs the raw :<args> string and the configured executable instead).
+CMD_TAG_NAME = "CMD"
+
+# Safety cap on how much of a #CMD command's stdout gets substituted into a
+# shape - guards against a misbehaving/unexpectedly chatty script bloating
+# a slide's text indefinitely.
+_MAX_CMD_OUTPUT_CHARS = 4000
 
 
 def _parse_offset_minutes(offset_str: str | None) -> int:
@@ -60,6 +107,148 @@ class TextShapeLike(Protocol):
 
     def get_text(self) -> str: ...
     def set_text(self, text: str) -> None: ...
+
+
+def _parse_shell_like_args(raw: str) -> list[str]:
+    """Parses a ``#CMD:<...>`` argument string into a list of argv entries,
+    shell-like: whitespace outside quotes separates args; a single- or
+    double-quoted span (which may itself contain spaces) is ONE argument,
+    with the quotes themselves stripped. A quote only starts a quoted span
+    when it appears at the START of a token (not mid-token).
+
+    Deliberately simpler than Python's stdlib ``shlex`` (no backslash-
+    escape handling at all) - this is intentional: shlex's default POSIX
+    mode treats ``\\`` as an escape character, which would silently mangle
+    a literal Windows path typed between the ``<...>`` brackets (e.g.
+    ``C:\\Users\\x``). Nothing here needs escaping for the kinds of simple
+    args this tag is meant for; if an argument needs to contain a literal
+    quote character, this parser does not support that."""
+    args: list[str] = []
+    i = 0
+    n = len(raw)
+    while i < n:
+        ch = raw[i]
+        if ch.isspace():
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            start = i
+            while i < n and raw[i] != quote:
+                i += 1
+            args.append(raw[start:i])
+            i += 1  # skip the closing quote (or just reach end-of-string)
+            continue
+        start = i
+        while i < n and not raw[i].isspace() and raw[i] not in ("'", '"'):
+            i += 1
+        args.append(raw[start:i])
+    return args
+
+
+def _run_cmd_tag(cmd_executable: str | None, raw_args: str | None, timeout_seconds: float) -> str:
+    """Runs the configured ``cmd_tag_executable`` (see LuahConfig's
+    docstring in config.py) with the ``#CMD:<...>`` tag's parsed args
+    appended, and returns its stdout (used as the cached value for that
+    args-key - see module docstring for the cache-based design; this
+    function is called from ``refresh_cmd_cache``, NOT from
+    ``render_template`` directly).
+
+    Security note: both ``cmd_executable``'s own shell-like-split prefix
+    and the per-call args are passed to subprocess.run as a plain argv
+    LIST (never ``shell=True``, never string-concatenated into a shell
+    command line) - so shell metacharacters in a shape's ``#CMD:<...>``
+    text (which, per this project's whole design, ANY shul member can
+    author via their phone's PowerPoint app) can never be interpreted as
+    shell syntax/command injection. The configured executable itself is
+    still responsible for safely handling whatever argv values it
+    receives - this only protects against shell injection at the
+    OS-process-launch boundary, not against anything the target script
+    itself might do with its own arguments.
+
+    Never raises - any failure (missing config, bad executable, timeout,
+    non-zero exit, OS error) is caught and turned into a short, visible
+    ``[#CMD: ...]`` placeholder string instead, so a misconfigured/failing
+    command shows up clearly on the actual signage display rather than
+    crashing the refresh tick or silently leaving stale text."""
+    if not cmd_executable or not cmd_executable.strip():
+        return "[#CMD: no cmd_tag_executable configured in config.json]"
+    try:
+        base_argv = shlex.split(cmd_executable)
+    except ValueError as exc:
+        return f"[#CMD: invalid cmd_tag_executable config: {exc}]"
+    if not base_argv:
+        return "[#CMD: cmd_tag_executable is empty]"
+
+    argv = base_argv + _parse_shell_like_args(raw_args or "")
+    # Force the child process's own stdout/stderr text encoding to UTF-8
+    # regardless of the OS console code page - without this, a Python (or
+    # similar) script's own print() calls can be silently mis-encoded on
+    # Windows (observed: Hebrew text coming back as mojibake "?"/replacement
+    # characters even though we decode the captured bytes as UTF-8 below -
+    # the CHILD process itself wrote them in a different encoding to begin
+    # with). Same fix already used for this exact class of problem in
+    # launch.py/app.py elsewhere in this codebase. Harmless no-op for
+    # non-Python commands (PYTHONIOENCODING is Python-interpreter-specific).
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8:backslashreplace"
+    try:
+        result = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+        )
+    except FileNotFoundError:
+        return f"[#CMD: executable not found: {argv[0]!r}]"
+    except subprocess.TimeoutExpired:
+        return f"[#CMD: timed out after {timeout_seconds:.0f}s]"
+    except OSError as exc:
+        return f"[#CMD: error launching command: {exc}]"
+
+    if result.returncode != 0:
+        stderr_preview = (result.stderr or "").strip()[:200]
+        suffix = f": {stderr_preview}" if stderr_preview else ""
+        return f"[#CMD: exit code {result.returncode}{suffix}]"
+
+    output = (result.stdout or "").strip()
+    if len(output) > _MAX_CMD_OUTPUT_CHARS:
+        output = output[:_MAX_CMD_OUTPUT_CHARS] + "\u2026(truncated)"
+    return output
+
+
+def find_cmd_arg_keys(templates: Iterable[str]) -> set[str]:
+    """Scans a set of shape templates for every ``#CMD:<...>`` occurrence
+    and returns the set of distinct, normalized args-keys found (bare
+    ``#CMD`` and ``#CMD:<>`` both normalize to the key ``""``). Used by
+    ``PresentationController._prepare_document`` to know which args-keys
+    ``refresh_cmd_cache`` needs to resolve for the currently-loaded deck."""
+    keys: set[str] = set()
+    for template in templates:
+        for match in TAG_PATTERN.finditer(template):
+            if match.group(1) == CMD_TAG_NAME:
+                keys.add(match.group(3) or "")
+    return keys
+
+
+def refresh_cmd_cache(
+    cache: dict[str, str],
+    cmd_executable: str | None,
+    arg_keys: Iterable[str],
+    timeout_seconds: float = 10.0,
+) -> None:
+    """Runs the configured command ONCE per distinct args-key in
+    ``arg_keys`` (as found by ``find_cmd_arg_keys``) and stores each
+    result into ``cache`` (mutated in place, keyed by the same args-key
+    strings that ``render_template``'s ``#CMD`` handling looks up). Meant
+    to be called on its own, infrequent tick (see module docstring) -
+    NOT from the main per-tick content refresh."""
+    for key in arg_keys:
+        cache[key] = _run_cmd_tag(cmd_executable, key, timeout_seconds)
 
 
 def _fmt_time(hd, offset_minutes: int = 0) -> str:
@@ -153,14 +342,33 @@ TAG_REGISTRY: dict[str, Callable[[ZmanContext, int], str]] = {
 # multi-mode slide switching) rather than by generic text substitution.
 NON_TEXT_TAGS = {"ANCLOCK", "MULTIMODE"}
 
+# Tags handled specially inside render_template's _replace closure, rather
+# than via TAG_REGISTRY's uniform (ctx, offset_minutes) -> str renderers.
+_SPECIAL_TAGS = {CMD_TAG_NAME}
+
 
 def contains_known_tag(text: str) -> bool:
-    return any(m.group(1) in TAG_REGISTRY for m in TAG_PATTERN.finditer(text))
+    return any(
+        m.group(1) in TAG_REGISTRY or m.group(1) in _SPECIAL_TAGS for m in TAG_PATTERN.finditer(text)
+    )
 
 
-def render_template(template: str, ctx: ZmanContext) -> str:
+def render_template(
+    template: str,
+    ctx: ZmanContext,
+    cmd_cache: dict[str, str] | None = None,
+) -> str:
+    """Re-renders ``template`` (a shape's original tag-containing text)
+    against ``ctx``. ``#CMD:<...>`` tags are looked up in ``cmd_cache``
+    (populated separately/infrequently by ``refresh_cmd_cache`` - see
+    module docstring) rather than executed here - a key not yet present
+    in the cache (e.g. before the first cmd-refresh tick has run)
+    substitutes as an empty string, not an error placeholder."""
     def _replace(match: re.Match) -> str:
         tag_name = match.group(1)
+        if tag_name == CMD_TAG_NAME:
+            key = match.group(3) or ""
+            return (cmd_cache or {}).get(key, "")
         offset = _parse_offset_minutes(match.group(2))
         renderer = TAG_REGISTRY.get(tag_name)
         if renderer is None:
@@ -179,8 +387,8 @@ class TrackedShape:
     shape: TextShapeLike
     template: str
 
-    def refresh(self, ctx: ZmanContext) -> None:
-        self.shape.set_text(render_template(self.template, ctx))
+    def refresh(self, ctx: ZmanContext, cmd_cache: dict[str, str] | None = None) -> None:
+        self.shape.set_text(render_template(self.template, ctx, cmd_cache))
 
 
 def scan_shapes_for_tags(shapes: list[TextShapeLike]) -> list[TrackedShape]:
