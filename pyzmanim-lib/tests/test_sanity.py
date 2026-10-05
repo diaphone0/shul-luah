@@ -103,6 +103,80 @@ def test_tzaisyeshiva_elevation_adjusted_is_later_than_flat():
     assert elevated > flat
 
 
+def test_modern_holidays_disabled_by_default():
+    # Yom HaAtzmaut 2023 (5 Iyar 5783) = 26 Apr 2023. With modern_holidays
+    # left at its default (False), get_yom_tov must NOT recognize it.
+    h = convert_date(datetime(2023, 4, 26))
+    assert h.month == 2 and h.day == 5
+    assert get_yom_tov(h) == YomTov.CHOL
+
+
+def test_yom_haatzmaut_on_wednesday_is_5_iyar():
+    # 5 Iyar 5783 fell on a Wednesday - no push needed.
+    h = convert_date(datetime(2023, 4, 26))
+    h.modern_holidays = True
+    assert h.month == 2 and h.day == 5
+    assert get_yom_tov(h) == YomTov.YOM_HAATZMAUT
+
+
+def test_yom_haatzmaut_pushed_to_tuesday_when_5_iyar_is_monday():
+    # 5 Iyar 5784 (2024) fell on a Monday - pushed forward to 6 Iyar/Tuesday.
+    h = convert_date(datetime(2024, 5, 14))
+    h.modern_holidays = True
+    assert h.month == 2 and h.day == 6
+    assert get_yom_tov(h) == YomTov.YOM_HAATZMAUT
+    # The raw (unpushed) 5 Iyar day itself must NOT also be Yom HaAtzmaut.
+    day_before = convert_date(datetime(2024, 5, 13))
+    day_before.modern_holidays = True
+    assert get_yom_tov(day_before) != YomTov.YOM_HAATZMAUT
+
+
+def test_yom_hazikaron_is_always_the_day_before_yom_haatzmaut():
+    for g_date in (datetime(2023, 4, 25), datetime(2024, 5, 13), datetime(2025, 4, 30)):
+        h = convert_date(g_date)
+        h.modern_holidays = True
+        assert get_yom_tov(h) == YomTov.YOM_HAZIKARON
+
+
+def test_yom_hashoah_pushed_when_27_nissan_is_friday():
+    # 27 Nissan 5781 (2021) fell on a Friday - pushed back to 26 Nissan/Thursday.
+    h = convert_date(datetime(2021, 4, 8))
+    h.modern_holidays = True
+    assert h.month == 1 and h.day == 26
+    assert get_yom_tov(h) == YomTov.YOM_HASHOAH
+
+
+def test_yom_hashoah_pushed_when_27_nissan_is_sunday():
+    # 27 Nissan 5784 (2024) fell on a Sunday - pushed forward to 28 Nissan/Monday.
+    h = convert_date(datetime(2024, 5, 6))
+    h.modern_holidays = True
+    assert h.month == 1 and h.day == 28
+    assert get_yom_tov(h) == YomTov.YOM_HASHOAH
+
+
+def test_yom_yerushalayim_is_always_28_iyar_no_weekday_push():
+    for year in range(2016, 2027):
+        d = datetime(year, 3, 25)
+        found = False
+        while d < datetime(year, 6, 15):
+            h = convert_date(d)
+            h.modern_holidays = True
+            if get_yom_tov(h) == YomTov.YOM_YERUSHALAYIM:
+                assert h.month == 2 and h.day == 28
+                found = True
+            from datetime import timedelta
+
+            d += timedelta(days=1)
+        assert found, f"Yom Yerushalayim not found in {year}"
+
+
+def test_yom_tov_format_modern_holidays():
+    assert hdateformat.yom_tov_format(YomTov.YOM_HASHOAH) == "\u05d9\u05d5\u05dd \u05d4\u05e9\u05d5\u05d0\u05d4"
+    assert hdateformat.yom_tov_format(YomTov.YOM_HAZIKARON) == "\u05d9\u05d5\u05dd \u05d4\u05d6\u05d9\u05db\u05e8\u05d5\u05df"
+    assert hdateformat.yom_tov_format(YomTov.YOM_HAATZMAUT) == "\u05d9\u05d5\u05dd \u05d4\u05e2\u05e6\u05de\u05d0\u05d5\u05ea"
+    assert hdateformat.yom_tov_format(YomTov.YOM_YERUSHALAYIM) == "\u05d9\u05d5\u05dd \u05d9\u05e8\u05d5\u05e9\u05dc\u05d9\u05dd"
+
+
 def test_num_to_h_char_gematria():
     assert hdateformat.num_to_h_char(5784) == "תשפ\u05f4ד"
     assert hdateformat.num_to_h_char(15) == "ט\u05f4ו"  # avoids יה (divine name)

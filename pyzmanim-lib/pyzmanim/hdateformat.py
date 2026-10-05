@@ -12,6 +12,17 @@ from pyzmanim._data.hdateformat_data import HCHAR, HMONTH, HWDAY, PARSHAHCHAR, Y
 from pyzmanim.hebrewcalendar import HDate, Parshah, YomTov, hdate_add_day, hdate_gregorian
 from pyzmanim.noaa_calculator import Location
 
+# Modern Israeli holidays (Yom HaShoah, Yom HaZikaron, Yom HaAtzmaut, Yom
+# Yerushalayim) don't exist in the upstream vbzmanim VBA source, so their
+# titles aren't in the auto-generated YOMTOV_FORMAT. Hand-maintained here so
+# they survive re-running tools/generate_data.py against upstream.
+_MODERN_YOMTOV_FORMAT = {
+    "YOM_HASHOAH": "יום השואה",
+    "YOM_HAZIKARON": "יום הזיכרון",
+    "YOM_HAATZMAUT": "יום העצמאות",
+    "YOM_YERUSHALAYIM": "יום ירושלים",
+}
+
 
 def parshah_format(current: Parshah) -> str:
     return PARSHAHCHAR[int(current)]
@@ -164,7 +175,10 @@ def molad_format(molad: HDate, full_date: bool = True) -> str:
 
 def yom_tov_format(current: YomTov) -> str:
     """Convert a YomTov value to its Hebrew display title."""
-    return YOMTOV_FORMAT.get(YomTov(current).name, "")
+    name = YomTov(current).name
+    if name in YOMTOV_FORMAT:
+        return YOMTOV_FORMAT[name]
+    return _MODERN_YOMTOV_FORMAT.get(name, "")
 
 
 def avos_format(avos: int) -> str:

@@ -89,6 +89,14 @@ class YomTov(IntEnum):
     SHUVA = 61
     SHIRA = 62
     SHABBOS_CHOL_HAMOED = 63
+    # Modern Israeli holidays (observed only when `HDate.modern_holidays` is
+    # True, mirroring KosherJava's opt-in `useModernHolidays` flag). Not part
+    # of the upstream vbzmanim VBA source - ported directly from
+    # KosherJava/Zmanim's JewishCalendar.getYomTovIndex().
+    YOM_HASHOAH = 64
+    YOM_HAZIKARON = 65
+    YOM_HAATZMAUT = 66
+    YOM_YERUSHALAYIM = 67
 
 
 class Parshah(IntEnum):
@@ -164,7 +172,7 @@ class HDate:
     month: int = 0  # 1=Nissan .. 13=Adar II (leap years only)
     day: int = 0  # 1-30
     dayOfYear: int = 0  # from Tishrei
-    wday: int = 0  # 0=Sunday .. 6=Saturday
+    wday: int = 0  # 0=Saturday .. 6=Friday (1=Sunday, 2=Monday, ...)
     leap: int = 0
     hour: int = 0
     min: int = 0
@@ -172,6 +180,7 @@ class HDate:
     msec: int = 0
     offset: int = 0  # timezone offset in seconds
     EY: bool = False  # Eretz Yisroel (affects yomtov & parshah)
+    modern_holidays: bool = False  # include Israeli modern holidays in get_yom_tov
 
 
 EMPTY_HDATE = HDate()
@@ -693,11 +702,39 @@ def get_yom_tov(date_in: HDate) -> YomTov:
             result = YomTov.SHVEI_SHEL_PESACH
         elif date_in.day == 22 and not date_in.EY:
             result = YomTov.ACHRON_SHEL_PESACH
+        elif date_in.modern_holidays and (
+            (date_in.day == 26 and date_in.wday == 5)
+            or (date_in.day == 28 and date_in.wday == 2)
+            or (date_in.day == 27 and date_in.wday not in (1, 6))
+        ):
+            # Yom HaShoah is normally 27 Nissan; pushed back to Thursday
+            # (26th) if it would fall on Friday, or forward to Monday
+            # (28th) if it would fall on Sunday.
+            result = YomTov.YOM_HASHOAH
     elif date_in.month == 2:
         if date_in.day == 14:
             return YomTov.PESACH_SHEINI
         if date_in.day == 18:
             return YomTov.LAG_BAOMER
+        if date_in.modern_holidays:
+            if (
+                (date_in.day == 4 and date_in.wday == 3)
+                or (date_in.day in (2, 3) and date_in.wday == 4)
+                or (date_in.day == 5 and date_in.wday == 2)
+            ):
+                # Yom HaZikaron is the day before Yom HaAtzmaut.
+                return YomTov.YOM_HAZIKARON
+            if (
+                (date_in.day == 5 and date_in.wday == 4)
+                or (date_in.day in (3, 4) and date_in.wday == 5)
+                or (date_in.day == 6 and date_in.wday == 3)
+            ):
+                # Yom HaAtzmaut is normally 5 Iyar; pushed back to Thursday
+                # (3rd/4th) if it would fall on Friday/Shabbos, or forward to
+                # Tuesday (6th) if it would fall on Monday.
+                return YomTov.YOM_HAATZMAUT
+            if date_in.day == 28:
+                return YomTov.YOM_YERUSHALAYIM
     elif date_in.month == 3:
         if date_in.day == 5:
             return YomTov.EREV_SHAVOUS
