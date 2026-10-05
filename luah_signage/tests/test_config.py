@@ -8,6 +8,7 @@ import json
 import tempfile
 from pathlib import Path
 
+from luah_signage import config as config_module
 from luah_signage.config import DEFAULT_PPTX_PATH, load_config
 
 
@@ -72,6 +73,20 @@ def test_debug_repaint_defaults():
         assert config.debug_repaint_nudge_shape is False
 
 
+def test_debug_skip_slideshow_default_false():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _write_config(Path(tmp))
+        config = load_config(path)
+        assert config.debug_skip_slideshow is False
+
+
+def test_debug_skip_slideshow_override():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _write_config(Path(tmp), debug_skip_slideshow=True)
+        config = load_config(path)
+        assert config.debug_skip_slideshow is True
+
+
 def test_debug_repaint_overrides():
     with tempfile.TemporaryDirectory() as tmp:
         path = _write_config(
@@ -122,6 +137,97 @@ def test_cmd_tag_global_args_as_json_list():
         )
         config = load_config(path)
         assert config.cmd_tag_global_args == ["--sep", " - ", "--swap"]
+
+
+def test_parse_config_override_valid_json():
+    assert config_module.parse_config_override('{"cmd_tick_seconds": 60}') == {"cmd_tick_seconds": 60}
+
+
+def test_parse_config_override_invalid_json_raises():
+    try:
+        config_module.parse_config_override("{not valid json")
+        assert False, "expected a JSONDecodeError"
+    except json.JSONDecodeError:
+        pass
+
+
+def test_parse_config_override_non_dict_raises():
+    try:
+        config_module.parse_config_override("[1, 2, 3]")
+        assert False, "expected a ValueError"
+    except ValueError:
+        pass
+
+
+def _base_config(tmp: Path):
+    path = _write_config(Path(tmp))
+    return load_config(path)
+
+
+def test_apply_config_overrides_single_key():
+    with tempfile.TemporaryDirectory() as tmp:
+        base = _base_config(tmp)
+        updated = config_module.apply_config_overrides(base, {"cmd_tick_seconds": 60})
+        assert updated.cmd_tick_seconds == 60
+        # Everything else unchanged.
+        assert updated.content_tick_seconds == base.content_tick_seconds
+        assert updated.pptx_path == base.pptx_path
+
+
+def test_apply_config_overrides_does_not_mutate_original():
+    with tempfile.TemporaryDirectory() as tmp:
+        base = _base_config(tmp)
+        config_module.apply_config_overrides(base, {"cmd_tick_seconds": 60})
+        assert base.cmd_tick_seconds == 300.0  # unchanged
+
+
+def test_apply_config_overrides_nested_clock_style_partial_merge():
+    with tempfile.TemporaryDirectory() as tmp:
+        base = _base_config(tmp)
+        updated = config_module.apply_config_overrides(base, {"clock_style": {"show_second_hand": False}})
+        assert updated.clock_style.show_second_hand is False
+        # Every other clock_style field preserved from the base config.
+        assert updated.clock_style.hour_color == base.clock_style.hour_color
+        assert updated.clock_style.pivot_radius_mm == base.clock_style.pivot_radius_mm
+
+
+def test_apply_config_overrides_nested_location_partial_merge():
+    with tempfile.TemporaryDirectory() as tmp:
+        base = _base_config(tmp)
+        updated = config_module.apply_config_overrides(base, {"location": {"elevation": 999}})
+        assert updated.location.elevation == 999
+        assert updated.location.latitude == base.location.latitude
+        assert updated.location.longitude == base.location.longitude
+
+
+def test_apply_config_overrides_multiple_keys_at_once():
+    with tempfile.TemporaryDirectory() as tmp:
+        base = _base_config(tmp)
+        updated = config_module.apply_config_overrides(
+            base, {"cmd_tick_seconds": 60, "content_tick_seconds": 15, "auto_recover": False}
+        )
+        assert updated.cmd_tick_seconds == 60
+        assert updated.content_tick_seconds == 15
+        assert updated.auto_recover is False
+
+
+def test_apply_config_overrides_unknown_key_raises():
+    with tempfile.TemporaryDirectory() as tmp:
+        base = _base_config(tmp)
+        try:
+            config_module.apply_config_overrides(base, {"not_a_real_field": 123})
+            assert False, "expected a TypeError"
+        except TypeError:
+            pass
+
+
+def test_apply_config_overrides_pptx_path_resolved_via_fallback():
+    with tempfile.TemporaryDirectory() as tmp:
+        base = _base_config(tmp)
+        # Nonexistent path should fall back to DEFAULT_PPTX_PATH, same as
+        # load_config's own pptx_path handling.
+        updated = config_module.apply_config_overrides(base, {"pptx_path": "C:/does/not/exist.pptx"})
+        assert updated.pptx_path == DEFAULT_PPTX_PATH
 
 
 if __name__ == "__main__":

@@ -46,6 +46,48 @@ def test_handles_missing_file_gracefully():
         assert watcher.check_for_change() is True
 
 
+def test_retarget_switches_watched_path():
+    with tempfile.TemporaryDirectory() as tmp:
+        path_a = Path(tmp) / "a.pptx"
+        path_b = Path(tmp) / "b.pptx"
+        path_a.write_text("a")
+        path_b.write_text("b")
+
+        watcher = FileChangeWatcher(path_a)
+        watcher.retarget(path_b)
+        assert watcher.path == path_b
+
+
+def test_retarget_establishes_fresh_baseline_no_spurious_change():
+    with tempfile.TemporaryDirectory() as tmp:
+        path_a = Path(tmp) / "a.pptx"
+        path_b = Path(tmp) / "b.pptx"
+        path_a.write_text("a")
+        path_b.write_text("b")
+
+        watcher = FileChangeWatcher(path_a)
+        watcher.retarget(path_b)
+        # Retargeting to a never-before-seen path must NOT itself count as
+        # a "change" on the very next check.
+        assert watcher.check_for_change() is False
+
+
+def test_retarget_still_detects_real_changes_on_new_path():
+    with tempfile.TemporaryDirectory() as tmp:
+        path_a = Path(tmp) / "a.pptx"
+        path_b = Path(tmp) / "b.pptx"
+        path_a.write_text("a")
+        path_b.write_text("b")
+
+        watcher = FileChangeWatcher(path_a)
+        watcher.retarget(path_b)
+        assert watcher.check_for_change() is False
+
+        new_time = time.time() + 5
+        os.utime(path_b, (new_time, new_time))
+        assert watcher.check_for_change() is True
+
+
 if __name__ == "__main__":
     import sys
     import traceback

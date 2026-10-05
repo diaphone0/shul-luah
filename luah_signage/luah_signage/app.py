@@ -9,6 +9,7 @@ from __future__ import annotations
 import sys
 import time
 import traceback
+from pathlib import Path
 
 from . import uno_bridge
 from .config import LuahConfig, load_config
@@ -63,7 +64,19 @@ def _connect_and_load(config: LuahConfig, time_source: TimeSource) -> Presentati
     ctx = uno_bridge.connect_or_launch(host=config.uno_host, port=config.uno_port)
     controller = PresentationController(config, ctx, time_source)
     controller.load()
-    controller.start_slideshow()
+    # DEBUGGING ONLY: debug_skip_slideshow=True skips starting the
+    # fullscreen slideshow entirely, leaving only the Impress editing
+    # window open (pair with hide_editor_window=False, otherwise nothing
+    # would be visible at all) - useful for inspecting shapes/tag
+    # substitution without a fullscreen presentation covering the screen.
+    # Every other refresh mechanism (clock/content ticks, #CMD cache,
+    # file-change reload) still runs completely normally either way - see
+    # LuahConfig.debug_skip_slideshow's docstring. Reads from
+    # controller.config (not the outer `config` parameter) so a deck's
+    # own "#CONFIG:{...}" override of this flag takes effect too, same as
+    # every other per-tick setting in this module.
+    if not controller.config.debug_skip_slideshow:
+        controller.start_slideshow()
     # Populate the #CMD cache once, right away - WITHOUT this, any #CMD tag
     # would render as an empty string for the entire first content_tick_
     # seconds interval (the main loop's cmd-refresh tick also fires on its
@@ -86,7 +99,13 @@ def run(config: LuahConfig) -> None:
         print(f"luah_signage: using MOCKED time, starting at {config.mock_start_datetime}")
 
     controller = _connect_and_load(config, time_source)
-    watcher = FileChangeWatcher(config.pptx_path)
+    # Watches whichever pptx_path is CURRENTLY effective (controller.config,
+    # not the outer `config` parameter) - if a deck's #CONFIG tag overrode
+    # pptx_path during that load, we want to watch the file actually being
+    # displayed, not the original config.json path. See the matching
+    # watcher.retarget() call in the recovery branch below for why this
+    # needs to stay in sync across reconnects too.
+    watcher = FileChangeWatcher(controller.config.pptx_path)
     last_content_refresh = 0.0
     last_reload_check = 0.0
     # Set to "now" (not 0.0, unlike the other last_*_refresh trackers) -
@@ -127,14 +146,28 @@ def run(config: LuahConfig) -> None:
                 controller.poll_slide_advance(loop_time)
                 controller.refresh_clock(now, loop_time)
 
-                if loop_time - last_content_refresh >= config.content_tick_seconds:
+                # Read every per-tick setting below from controller.config
+                # (the EFFECTIVE config for whatever's currently loaded),
+                # NOT the outer `config` parameter (the original, unchanging
+                # file-loaded config) - a deck's "#CONFIG:{...}" tag (see
+                # presentation.py's _prepare_document) can override any of
+                # these at load/reload time, and reading the stale outer
+                # `config` here would silently ignore that override for the
+                # whole tick-scheduling loop even though the controller
+                # itself picked it up correctly.
+                if loop_time - last_content_refresh >= controller.config.content_tick_seconds:
                     controller.refresh_content(now)
                     last_content_refresh = loop_time
 
-                if loop_time - last_reload_check >= config.reload_poll_seconds:
+                if loop_time - last_reload_check >= controller.config.reload_poll_seconds:
                     if watcher.check_for_change():
-                        print(f"luah_signage: {config.pptx_path} changed on disk, reloading ...")
+                        print(f"luah_signage: {watcher.path} changed on disk, reloading ...")
                         controller.reload()
+                        # The reload may have picked up a NEW (or removed a
+                        # previous) #CONFIG pptx_path override - keep the
+                        # watcher pointed at whatever's effective now.
+                        if Path(controller.config.pptx_path) != watcher.path:
+                            watcher.retarget(controller.config.pptx_path)
                     last_reload_check = loop_time
 
                 # Deliberately on its OWN, much-less-frequent tick
@@ -146,16 +179,16 @@ def run(config: LuahConfig) -> None:
                 # (default 30s), forever, risks tripping rate limits on
                 # whatever remote service it calls. A no-op if the deck
                 # has no #CMD tags at all.
-                if loop_time - last_cmd_refresh >= config.cmd_tick_seconds:
+                if loop_time - last_cmd_refresh >= controller.config.cmd_tick_seconds:
                     controller.refresh_cmd_tags()
                     last_cmd_refresh = loop_time
 
                 recovery_backoff = _RECOVERY_BACKOFF_SECONDS  # reset after a healthy tick
-                time.sleep(config.clock_tick_seconds)
+                time.sleep(controller.config.clock_tick_seconds)
             except KeyboardInterrupt:
                 raise
             except Exception:
-                if not config.auto_recover:
+                if not controller.config.auto_recover:
                     # Debug/dev mode (auto_recover=False): let the app exit
                     # normally instead of retrying, so closing LibreOffice
                     # or Ctrl+C-ing during a dev session cleanly ends the
@@ -178,6 +211,8 @@ def run(config: LuahConfig) -> None:
                     last_content_refresh = 0.0
                     last_reload_check = 0.0
                     last_cmd_refresh = time.monotonic()  # see run()'s matching comment above
+                    if Path(controller.config.pptx_path) != watcher.path:
+                        watcher.retarget(controller.config.pptx_path)
                 except Exception:
                     print("luah_signage: recovery attempt failed, will retry.")
                     traceback.print_exc()

@@ -84,6 +84,37 @@ CMD_TAG_NAME = "CMD"
 # a slide's text indefinitely.
 _MAX_CMD_OUTPUT_CHARS = 4000
 
+# Marker prefix for the "#CONFIG:{json}" tag (see
+# presentation.py's _prepare_document docstring/module comments for the
+# full design) - a shape whose text contains this prefix is a config-
+# override marker: always hidden (like #HIDDEN), with everything after
+# the prefix treated as a JSON object that overrides one or more
+# config.json values for the current load/reload. NOT handled via
+# TAG_PATTERN's regex at all (unlike #CMD's ":<...>" suffix) since JSON
+# can itself contain any characters including "<"/">"/colons/braces -
+# a simple substring search for this prefix, with everything after it
+# taken as the JSON payload, is simpler and more robust here.
+CONFIG_TAG_PREFIX = "#CONFIG:"
+
+
+def find_first_config_json(texts: Iterable[str]) -> str | None:
+    """Scans shape texts (in the given iteration order - callers should
+    pass them in deck/document order) and returns the JSON payload (the
+    substring after ``#CONFIG:``, stripped) of the FIRST text containing
+    a ``#CONFIG:`` marker, or ``None`` if none exists.
+
+    Per the feature's design, only the FIRST ``#CONFIG`` tag found across
+    the whole deck is used - every subsequent ``#CONFIG``-tagged shape
+    (if any) is silently ignored entirely (not even parsed) - a
+    deliberate simplification so a deck author can't accidentally end up
+    with ambiguous/conflicting config overrides from two different
+    slides."""
+    for text in texts:
+        idx = text.find(CONFIG_TAG_PREFIX)
+        if idx != -1:
+            return text[idx + len(CONFIG_TAG_PREFIX):].strip()
+    return None
+
 
 def _parse_offset_minutes(offset_str: str | None) -> int:
     """Parses a tag's offset suffix (as captured by TAG_PATTERN's second

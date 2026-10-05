@@ -229,6 +229,39 @@ def test_contains_known_tag_recognizes_cmd_tag():
     assert tagging.contains_known_tag("#CMD")
 
 
+def test_find_first_config_json_no_match_returns_none():
+    assert tagging.find_first_config_json(["no config here", "#HIDDEN"]) is None
+
+
+def test_find_first_config_json_single_match():
+    result = tagging.find_first_config_json(['#CONFIG:{"cmd_tick_seconds": 60}'])
+    assert result == '{"cmd_tick_seconds": 60}'
+
+
+def test_find_first_config_json_strips_whitespace():
+    result = tagging.find_first_config_json(['#CONFIG:   {"a": 1}   '])
+    assert result == '{"a": 1}'
+
+
+def test_find_first_config_json_first_match_wins():
+    texts = [
+        "no tag here",
+        '#CONFIG:{"first": true}',
+        '#CONFIG:{"second": true}',
+    ]
+    result = tagging.find_first_config_json(texts)
+    assert result == '{"first": true}'
+
+
+def test_find_first_config_json_tag_not_at_start_of_text():
+    result = tagging.find_first_config_json(['some label #CONFIG:{"a": 1}'])
+    assert result == '{"a": 1}'
+
+
+def test_find_first_config_json_empty_list_returns_none():
+    assert tagging.find_first_config_json([]) is None
+
+
 def test_cmd_tag_with_no_cache_renders_as_empty_string():
     ctx = _ctx(datetime(2024, 6, 21, 12, 0, 0))
     text = tagging.render_template("before #CMD:<foo> after", ctx, cmd_cache=None)

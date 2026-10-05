@@ -18,6 +18,7 @@
   "mock_start_datetime": null,
   "debug_slide_advance": false,
   "hide_editor_window": false,
+  "debug_skip_slideshow": false,
   "debug_repaint_lock_controllers": false,
   "debug_repaint_skip_unchanged_clock_writes": true,
   "debug_repaint_update_offscreen_clocks": true,

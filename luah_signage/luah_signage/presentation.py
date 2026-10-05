@@ -44,6 +44,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import tagging
+from . import config as config_module
 from .config import LuahConfig
 from .slide_advance import DynamicSlideAdvancer
 from .uno_shapes import (
@@ -275,6 +276,16 @@ def _next_visible_slide_index(current_index: int, visible_flags: list) -> tuple:
 
 class PresentationController:
     def __init__(self, config: LuahConfig, uno_ctx, time_source: TimeSource | None = None):
+        # self._base_config is the ORIGINAL, file-loaded config, passed
+        # in once at construction and NEVER mutated/reassigned after -
+        # self.config (the EFFECTIVE config actually used everywhere else
+        # in this class) is reset back to this exact object at the start
+        # of every _prepare_document() call, before a deck's #CONFIG tag
+        # (if any) is re-applied on top of it. This guarantees a
+        # #CONFIG override never "leaks" across reloads once a deck's tag
+        # is removed/changed - see _prepare_document and
+        # config.apply_config_overrides.
+        self._base_config = config
         self.config = config
         self.uno_ctx = uno_ctx
         # Defaults to a real (datetime.now()-based) TimeSource if not
@@ -396,9 +407,24 @@ class PresentationController:
         self._prepare_document()
 
     def reload(self) -> None:
-        was_showing = self._is_slideshow_running()
+        """Reloads the presentation from disk (see load()) and, in normal
+        operation, ensures the slideshow ends up running afterward -
+        REGARDLESS of whether it happened to be running right before this
+        call. This matters for the case where a user manually closed the
+        fullscreen slideshow window (e.g. to glance at something else)
+        but left the (off-screen/editing) document window open: the NEXT
+        auto-reload triggered by the file-watcher (see app.py) should
+        bring the slideshow back rather than leaving the display
+        permanently slideshow-less until the whole app is restarted.
+
+        config.debug_skip_slideshow=True (see its docstring in config.py)
+        is the one exception - in that explicit debug mode, reload()
+        deliberately never starts a slideshow at all, matching
+        _connect_and_load's own same-flag behavior in app.py, so you can
+        keep inspecting the editing window across reloads without a
+        fullscreen slideshow popping up unexpectedly."""
         self.load()
-        if was_showing:
+        if not self.config.debug_skip_slideshow:
             self.start_slideshow()
 
     def _close_document(self) -> None:
@@ -444,6 +470,29 @@ class PresentationController:
 
     # -- scanning -------------------------------------------------------
     def _prepare_document(self) -> None:
+        # #CONFIG:{...} tag: scanned in its OWN early pass, BEFORE
+        # anything else in this method that depends on self.config (e.g.
+        # #ANCLOCK's use of self.config.clock_style just below, or
+        # refresh_cmd_tags' later use of self.config.cmd_tag_executable) -
+        # so a deck-provided override takes effect for the rest of this
+        # same (re)load. Always reset to self._base_config FIRST (not
+        # just apply on top of whatever self.config currently is) so an
+        # override never persists across a reload once the deck's
+        # #CONFIG tag is removed or changed - see _base_config's
+        # docstring in __init__.
+        self.config = self._base_config
+        all_texts = [
+            shape.getString() for _, _, shape in iter_all_shapes(self.document) if is_text_shape(shape)
+        ]
+        config_json = tagging.find_first_config_json(all_texts)
+        if config_json:
+            try:
+                overrides = config_module.parse_config_override(config_json)
+                self.config = config_module.apply_config_overrides(self.config, overrides)
+                print(f"luah_signage: applied #CONFIG override: {overrides}")
+            except Exception as exc:
+                print(f"luah_signage: invalid #CONFIG tag ignored ({exc}): {config_json[:200]!r}")
+
         cholonly_indices: set = set()
         noncholonly_indices: set = set()
         hidden_indices: set = set()
@@ -461,19 +510,26 @@ class PresentationController:
                 shape.setString("")
                 shape.Visible = False
                 self.multimode_shapes.append(shape)
-            elif "#CHOLONLY" in text or "#NONCHOLONLY" in text or "#HIDDEN" in text:
+            elif (
+                "#CHOLONLY" in text
+                or "#NONCHOLONLY" in text
+                or "#HIDDEN" in text
+                or tagging.CONFIG_TAG_PREFIX in text
+            ):
                 # Pure marker shapes (like #MULTIMODE) - not meant to
                 # display their own literal tag text, just to flag which
                 # day-mode(s) apply to the slide they're on. A slide can
                 # have multiple markers (as separate shapes, or combined
                 # in one shape's text) - see _reconcile_day_modes for how
-                # these are resolved (#HIDDEN takes precedence over
-                # #CHOLONLY/#NONCHOLONLY if a slide somehow has both).
+                # these are resolved (#HIDDEN/#CONFIG take precedence
+                # over #CHOLONLY/#NONCHOLONLY if a slide somehow has
+                # both - a #CONFIG-tagged slide is always hidden, exactly
+                # like #HIDDEN, reusing the same mechanism).
                 if "#CHOLONLY" in text:
                     cholonly_indices.add(index)
                 if "#NONCHOLONLY" in text:
                     noncholonly_indices.add(index)
-                if "#HIDDEN" in text:
+                if "#HIDDEN" in text or tagging.CONFIG_TAG_PREFIX in text:
                     hidden_indices.add(index)
                 shape.setString("")
                 shape.Visible = False

@@ -8,7 +8,7 @@ offset, and the pptx path directly in LuahMain.bas).
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from pyzmanim.noaa_calculator import Location
@@ -115,6 +115,20 @@ class LuahConfig:
     # lets you see the editing view (e.g. to visually confirm shape
     # scanning/tag substitution) without hunting for an off-screen window.
     hide_editor_window: bool = True
+    # For DEBUGGING ONLY: when True, the fullscreen slideshow is NEVER
+    # started at all - only the Impress editing window is opened, so you
+    # can inspect/scroll through the actual slides and shapes (hashtag
+    # substitution, analog clock shapes, etc.) in a normal windowed view
+    # without a fullscreen presentation covering the screen. Pair this
+    # with hide_editor_window=False (otherwise there would be nothing
+    # visible at all, since the editing window would ALSO be hidden
+    # off-screen with no slideshow to show instead). Every other refresh
+    # mechanism (clock ticks, hashtag/content refresh, #CMD cache,
+    # file-change reload) keeps running completely normally - only the
+    # slideshow window itself is skipped - so shape updates are still
+    # visible live in the editing window as they happen. Leave False for
+    # normal/production use.
+    debug_skip_slideshow: bool = False
     # --- debug_repaint_* : DEBUGGING ONLY -----------------------------
     # Independent on/off toggles for each of the individual tweaks that
     # were added over time to avoid visible flashing/flickering in the
@@ -301,6 +315,7 @@ def load_config(path: Path | None = None) -> LuahConfig:
         mock_start_datetime=data.get("mock_start_datetime"),
         debug_slide_advance=data.get("debug_slide_advance", False),
         hide_editor_window=data.get("hide_editor_window", True),
+        debug_skip_slideshow=data.get("debug_skip_slideshow", False),
         debug_repaint_lock_controllers=data.get("debug_repaint_lock_controllers", True),
         debug_repaint_skip_unchanged_clock_writes=data.get(
             "debug_repaint_skip_unchanged_clock_writes", True
@@ -314,3 +329,64 @@ def load_config(path: Path | None = None) -> LuahConfig:
         cmd_tag_global_args=data.get("cmd_tag_global_args", []),
         cmd_tick_seconds=data.get("cmd_tick_seconds", 300.0),
     )
+
+
+def parse_config_override(json_text: str) -> dict:
+    """Parses a ``#CONFIG:{...}`` tag's JSON payload (see tagging.py's
+    ``find_first_config_json``) into a plain dict of override keys/
+    values, for use with ``apply_config_overrides`` below.
+
+    Raises ``json.JSONDecodeError`` on malformed JSON, or ``ValueError``
+    if the parsed value isn't a JSON object (e.g. a bare list or string) -
+    callers should catch both and decide how to report the failure (the
+    #CONFIG marker shape is always hidden and has no visible text of its
+    own to show an inline error in, unlike #CMD - presentation.py reports
+    failures via a console print instead)."""
+    data = json.loads(json_text)
+    if not isinstance(data, dict):
+        raise ValueError(f"#CONFIG JSON must be an object, got {type(data).__name__}")
+    return data
+
+
+def apply_config_overrides(config: LuahConfig, overrides: dict) -> LuahConfig:
+    """Returns a NEW LuahConfig with ``overrides`` applied on top of
+    ``config`` - used for a deck's ``#CONFIG:{...}`` tag (see
+    presentation.py's ``_prepare_document``), letting a single
+    shul-authored slide override one or more config.json values for that
+    specific deck/session, WITHOUT ever touching the actual config.json
+    file on disk. Works for both a single-key override (e.g.
+    ``{"cmd_tick_seconds": 60}``) and a full-config override (every
+    field at once) - there's no distinction in how either is handled,
+    since this just applies whatever keys happen to be present.
+
+    The ``location`` and ``clock_style`` sub-objects, if present in
+    ``overrides``, are MERGED onto the EXISTING config's own nested
+    dataclass (via ``dataclasses.replace``) rather than replaced outright
+    - so e.g. ``{"clock_style": {"show_second_hand": false}}`` only
+    changes that one clock_style field, keeping every other clock_style
+    field (hour_color, pivot_radius_mm, etc.) at its current value,
+    rather than resetting the whole sub-object to ClockStyle's bare
+    defaults.
+
+    A ``pptx_path`` override is resolved through the same
+    ``_resolve_pptx_path`` fallback logic used when loading config.json
+    normally (falls back to ``DEFAULT_PPTX_PATH`` if the override path
+    doesn't point to an existing file) - though note a mid-session
+    pptx_path override only takes effect on the NEXT reload() (the
+    currently-loading document is already open by the time #CONFIG tags
+    are scanned).
+
+    An unknown top-level key raises ``TypeError`` (via
+    ``dataclasses.replace``, which rejects unexpected keyword arguments)
+    - this is an intentional "fail loud" choice so a typo'd override key
+    doesn't silently do nothing; the whole override is applied atomically
+    (all keys or none) so a single bad key can't leave the config in a
+    half-overridden state."""
+    overrides = dict(overrides)  # don't mutate the caller's dict
+    if "location" in overrides and isinstance(overrides["location"], dict):
+        overrides["location"] = replace(config.location, **overrides["location"])
+    if "clock_style" in overrides and isinstance(overrides["clock_style"], dict):
+        overrides["clock_style"] = replace(config.clock_style, **overrides["clock_style"])
+    if "pptx_path" in overrides:
+        overrides["pptx_path"] = _resolve_pptx_path(overrides["pptx_path"])
+    return replace(config, **overrides)

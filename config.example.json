@@ -3,6 +3,7 @@
   "_comment_mock_start_datetime": "FOR TESTING ONLY: set to an ISO-8601 datetime string (e.g. '2026-09-25T14:30:00') to simulate the clock starting at that date/time (advancing normally from there) instead of using the real system clock - useful for testing zmanim/#CHOLONLY/#NONCHOLONLY behavior on a specific day without changing the OS clock. Leave null for normal/production use.",
   "_comment_debug_repaint": "FOR DEBUGGING ONLY: each debug_repaint_* flag independently disables one anti-flicker tweak, to help isolate which one (if any) causes frozen/non-updating clock hands on a particular machine. Leave all at their defaults for normal/production use.",
   "_comment_cmd_tag": "cmd_tag_executable configures the '#CMD:<args>' tag - a shell-like command-line string (e.g. 'python C:/Intel/luahnew/mg_sync/fetch_prayer_times.py'). Use forward slashes in paths. Leave null to leave #CMD unconfigured (renders as an empty string instead of failing). cmd_tag_global_args is extra argv entries applied to EVERY #CMD invocation regardless of args-key (appended after cmd_tag_executable's own prefix, before each tag's own args) - useful for a flag every call should always get. Give it as a JSON LIST of strings (each item used verbatim as one argv entry, e.g. [\"--sep\", \" - \", \"--swap\"] - no quote characters needed/no shell parsing applied), or a shell-like string for convenience. #CMD never runs inline - it only reads from a cache that's refreshed every cmd_tick_seconds (default 300s = 5 min), deliberately separate from content_tick_seconds, to avoid hammering a possibly slow/rate-limited external command every 30s. See LuahConfig.cmd_tag_executable's docstring in config.py for full security/performance notes.",
+  "_comment_config_tag": "A slide tagged '#CONFIG:{...}' is always hidden (like #HIDDEN), and the JSON object after the colon overrides one or more of THESE config.json values for the current session only - e.g. a shape with the text '#CONFIG:{\"cmd_tick_seconds\": 60}' overrides just that one field; a full config object overrides everything at once. Nested location/clock_style overrides are merged onto the existing values, not replaced outright. Only the FIRST #CONFIG tag found in the deck is used; any others are ignored. Never written back to this file - resets to this file's own values on every reload before the current deck's tag (if any) is re-applied. See apply_config_overrides() in config.py.",
   "pptx_path": "C:/luah/luah.pptx",
   "location": {
     "latitude": 32.06,
@@ -21,6 +22,7 @@
   "mock_start_datetime": null,
   "debug_slide_advance": false,
   "hide_editor_window": true,
+  "debug_skip_slideshow": false,
   "debug_repaint_lock_controllers": true,
   "debug_repaint_skip_unchanged_clock_writes": true,
   "debug_repaint_update_offscreen_clocks": true,

@@ -139,6 +139,14 @@ Then just run `python launch.py`.
 - **`#HIDDEN` slide tag**: a slide tagged `#HIDDEN` is always hidden, on both chol and non-chol
   days — takes precedence over `#CHOLONLY`/`#NONCHOLONLY` if a slide somehow has both, so a
   permanently-hidden slide doesn't need its other day-mode tags removed first.
+- **`#CONFIG:{json}` slide tag**: a slide tagged `#CONFIG:{...}` is always hidden (like `#HIDDEN`),
+  and the JSON object after the colon overrides one or more `config.json` values for the current
+  session — a single key (e.g. `#CONFIG:{"cmd_tick_seconds": 60}`) or the whole config at once.
+  Nested `location`/`clock_style` overrides are merged onto the existing values, not replaced
+  outright. Only the FIRST `#CONFIG` tag found in the deck is used; any others are ignored.
+  Overrides never touch `config.json` on disk and are reset to the file's own values on every
+  reload before the current deck's tag (if any) is re-applied — see `apply_config_overrides()`
+  in `config.py`.
 - **Mockable time** (`time_source.py`): `MockTimeSource` lets you test any date/time scenario
   without touching the OS clock — 1 real second = 1 simulated second, no acceleration.
 - **`#CMD:<args>` tag** (`tagging.py`): runs an externally configured script/command (set once in
@@ -207,8 +215,9 @@ install by testing `import <pkg>` from an unrelated directory.
 `#SUNSET`, `#TZAIS`, `#TZAISYESHIVA`, `#SHABBOS`, `#MOZASH`, `#DICLOCK`. Most accept an optional
 `+N`/`-N` (minutes) or `+HH:MM`/`-HH:MM` offset suffix, e.g. `#SUNSET-01:30`. `#CMD:<args>` runs a configured external
 command and substitutes its stdout (see `cmd_tag_executable` in `config.example.json`). Special
-non-text tags: `#ANCLOCK` (analog clock), `#CHOLONLY`/`#NONCHOLONLY`/`#HIDDEN` (day-mode slide
-visibility), `#MULTIMODE` (deprecated/inert, kept only for backward compat).
+non-text tags: `#ANCLOCK` (analog clock), `#CHOLONLY`/`#NONCHOLONLY`/`#HIDDEN`/`#CONFIG:{json}`
+(day-mode slide visibility + config overrides), `#MULTIMODE` (deprecated/inert, kept only for
+backward compat).
 
 ## Test suite
 

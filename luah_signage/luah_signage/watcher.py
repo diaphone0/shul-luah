@@ -25,6 +25,15 @@ class FileChangeWatcher:
         except FileNotFoundError:
             return None
 
+    def retarget(self, path: Path) -> None:
+        """Re-points this watcher at a different file (e.g. when a deck's
+        "#CONFIG:{...}" tag overrides pptx_path mid-session - see app.py's
+        run() loop) and establishes a FRESH mtime baseline for that new
+        path, so the very next check_for_change() call doesn't report a
+        spurious "changed" just because the path itself changed."""
+        self.path = Path(path)
+        self._last_mtime = self._read_mtime()
+
     def check_for_change(self) -> bool:
         """Returns True (once) if the file's mtime has changed since the
         last check (or since construction). Updates internal state so
