@@ -89,11 +89,23 @@ def _connect_and_load(config: LuahConfig, time_source: TimeSource) -> Presentati
 
 
 def run(config: LuahConfig) -> None:
-    # Created ONCE here (not inside _connect_and_load) so a mocked start
-    # time (config.mock_start_datetime) keeps advancing continuously
-    # across recovery reconnects instead of resetting back to its
-    # configured start value every time the display connection is lost
-    # and re-established - see time_source.py.
+    # Built ONCE here (not inside _connect_and_load) from the outer,
+    # file-loaded config, and passed as the BASELINE time_source into
+    # EVERY _connect_and_load call (the initial one below, and every
+    # later recovery reconnect - see the recovery branch) so a mocked
+    # clock keeps advancing continuously across reconnects instead of
+    # resetting back to its configured start value each time - see
+    # time_source.py. A deck's own "#CONFIG:{...}" tag can ALSO override
+    # mock_start_datetime - that's handled entirely inside
+    # PresentationController._prepare_document (see
+    # _sync_time_source_with_config), which replaces
+    # controller.time_source with a freshly-built one the moment the
+    # EFFECTIVE value changes. Nothing below needs to special-case that -
+    # just always read `controller.time_source` (never this local
+    # variable directly) for "now", and always pass `controller.
+    # time_source` (not this original baseline) into any LATER
+    # _connect_and_load call, so a previously-active override survives a
+    # crash+recovery reconnect instead of resetting.
     time_source = create_time_source(config.mock_start_datetime)
     if config.mock_start_datetime:
         print(f"luah_signage: using MOCKED time, starting at {config.mock_start_datetime}")
@@ -119,7 +131,7 @@ def run(config: LuahConfig) -> None:
     try:
         while True:
             try:
-                now = time_source.now()
+                now = controller.time_source.now()
                 loop_time = time.monotonic()
 
                 # Detect the document having been closed/disposed (e.g.
@@ -207,7 +219,15 @@ def run(config: LuahConfig) -> None:
                 time.sleep(recovery_backoff)
                 recovery_backoff = min(recovery_backoff * 2, _MAX_RECOVERY_BACKOFF_SECONDS)
                 try:
-                    controller = _connect_and_load(config, time_source)
+                    # Pass controller.time_source (NOT the original outer
+                    # `time_source` local from the top of run()) so a
+                    # previously-active "#CONFIG" mock_start_datetime
+                    # override keeps advancing continuously across this
+                    # reconnect too, instead of resetting back to the
+                    # unmocked baseline - controller itself may be a
+                    # disposed/dead object at this point, but plain
+                    # attribute access (unlike a UNO call) is always safe.
+                    controller = _connect_and_load(config, controller.time_source)
                     last_content_refresh = 0.0
                     last_reload_check = 0.0
                     last_cmd_refresh = time.monotonic()  # see run()'s matching comment above

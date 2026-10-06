@@ -159,6 +159,13 @@ def test_parse_config_override_non_dict_raises():
         pass
 
 
+def test_parse_config_override_strips_underscore_prefixed_comment_keys():
+    result = config_module.parse_config_override(
+        '{"_comment": "this is just a note", "cmd_tick_seconds": 60}'
+    )
+    assert result == {"cmd_tick_seconds": 60}
+
+
 def _base_config(tmp: Path):
     path = _write_config(Path(tmp))
     return load_config(path)
@@ -228,6 +235,29 @@ def test_apply_config_overrides_pptx_path_resolved_via_fallback():
         # load_config's own pptx_path handling.
         updated = config_module.apply_config_overrides(base, {"pptx_path": "C:/does/not/exist.pptx"})
         assert updated.pptx_path == DEFAULT_PPTX_PATH
+
+
+def test_apply_config_overrides_strips_underscore_keys_in_nested_clock_style():
+    with tempfile.TemporaryDirectory() as tmp:
+        base = _base_config(tmp)
+        # A "_comment" key inside a nested clock_style override must be
+        # silently dropped, not passed to dataclasses.replace (which would
+        # otherwise raise TypeError for an unknown field).
+        updated = config_module.apply_config_overrides(
+            base,
+            {"clock_style": {"_comment": "note", "show_second_hand": False}},
+        )
+        assert updated.clock_style.show_second_hand is False
+
+
+def test_apply_config_overrides_strips_underscore_keys_in_nested_location():
+    with tempfile.TemporaryDirectory() as tmp:
+        base = _base_config(tmp)
+        updated = config_module.apply_config_overrides(
+            base,
+            {"location": {"_comment": "note", "elevation": 999}},
+        )
+        assert updated.location.elevation == 999
 
 
 if __name__ == "__main__":

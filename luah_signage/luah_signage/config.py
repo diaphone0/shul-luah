@@ -331,10 +331,24 @@ def load_config(path: Path | None = None) -> LuahConfig:
     )
 
 
+def _strip_comment_keys(data: dict) -> dict:
+    """Returns a copy of ``data`` with any key starting with ``_`` removed
+    - lets a ``#CONFIG:{...}`` tag's JSON payload include comment-only
+    entries (e.g. ``"_comment": "..."``) the same way config.json/
+    config.example.json already do (see their own ``_comment_*`` keys),
+    without those keys being mistaken for real override fields."""
+    return {key: value for key, value in data.items() if not key.startswith("_")}
+
+
 def parse_config_override(json_text: str) -> dict:
     """Parses a ``#CONFIG:{...}`` tag's JSON payload (see tagging.py's
     ``find_first_config_json``) into a plain dict of override keys/
     values, for use with ``apply_config_overrides`` below.
+
+    Any top-level key starting with ``_`` (e.g. ``"_comment": "..."``) is
+    silently dropped - see ``_strip_comment_keys`` - letting a deck
+    author annotate their override JSON with comments without those keys
+    being treated as (unknown, error-raising) override fields.
 
     Raises ``json.JSONDecodeError`` on malformed JSON, or ``ValueError``
     if the parsed value isn't a JSON object (e.g. a bare list or string) -
@@ -345,7 +359,7 @@ def parse_config_override(json_text: str) -> dict:
     data = json.loads(json_text)
     if not isinstance(data, dict):
         raise ValueError(f"#CONFIG JSON must be an object, got {type(data).__name__}")
-    return data
+    return _strip_comment_keys(data)
 
 
 def apply_config_overrides(config: LuahConfig, overrides: dict) -> LuahConfig:
@@ -366,7 +380,9 @@ def apply_config_overrides(config: LuahConfig, overrides: dict) -> LuahConfig:
     changes that one clock_style field, keeping every other clock_style
     field (hour_color, pivot_radius_mm, etc.) at its current value,
     rather than resetting the whole sub-object to ClockStyle's bare
-    defaults.
+    defaults. Any ``_``-prefixed comment key WITHIN these nested dicts is
+    also stripped before merging (same as top-level keys - see
+    ``parse_config_override``).
 
     A ``pptx_path`` override is resolved through the same
     ``_resolve_pptx_path`` fallback logic used when loading config.json
@@ -384,9 +400,11 @@ def apply_config_overrides(config: LuahConfig, overrides: dict) -> LuahConfig:
     half-overridden state."""
     overrides = dict(overrides)  # don't mutate the caller's dict
     if "location" in overrides and isinstance(overrides["location"], dict):
-        overrides["location"] = replace(config.location, **overrides["location"])
+        overrides["location"] = replace(config.location, **_strip_comment_keys(overrides["location"]))
     if "clock_style" in overrides and isinstance(overrides["clock_style"], dict):
-        overrides["clock_style"] = replace(config.clock_style, **overrides["clock_style"])
+        overrides["clock_style"] = replace(
+            config.clock_style, **_strip_comment_keys(overrides["clock_style"])
+        )
     if "pptx_path" in overrides:
         overrides["pptx_path"] = _resolve_pptx_path(overrides["pptx_path"])
     return replace(config, **overrides)

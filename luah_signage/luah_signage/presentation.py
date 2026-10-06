@@ -55,7 +55,7 @@ from .uno_shapes import (
     iter_all_shapes,
     update_analog_clock,
 )
-from .time_source import TimeSource
+from .time_source import TimeSource, create_time_source
 from .zman_context import build_zman_context
 
 _TRANSITION_PROP_NAMES = ("TransitionType", "TransitionSubtype", "TransitionDuration")
@@ -294,6 +294,14 @@ class PresentationController:
         # but this default keeps direct construction (e.g. in a REPL or a
         # future test) convenient. See time_source.py.
         self.time_source = time_source or TimeSource()
+        # Tracks which `mock_start_datetime` string `self.time_source`
+        # currently reflects - starts at the BASE config's value (what the
+        # `time_source` passed in above was presumably already built
+        # from by the caller, e.g. app.py's create_time_source call), so
+        # that a deck's own "#CONFIG:{...}" tag overriding
+        # mock_start_datetime can be DETECTED (compared against this) and
+        # acted on in _prepare_document - see _sync_time_source_with_config.
+        self._active_mock_start_datetime = config.mock_start_datetime
         self.desktop = uno_ctx.ServiceManager.createInstanceWithContext(
             "com.sun.star.frame.Desktop", uno_ctx
         )
@@ -468,6 +476,46 @@ class PresentationController:
         # field docstring in __init__ for why previously-resolved #CMD
         # values should survive a reload.
 
+    def _sync_time_source_with_config(self) -> None:
+        """Rebuilds ``self.time_source`` if ``self.config.mock_start_datetime``
+        (the EFFECTIVE value, after any "#CONFIG:{...}" override was just
+        applied above) differs from what ``self.time_source`` currently
+        reflects (``self._active_mock_start_datetime``).
+
+        Why this exists: unlike every other field a "#CONFIG" tag can
+        override (which "just works" since the rest of this class always
+        reads from ``self.config``), ``mock_start_datetime`` is special -
+        it was already consumed ONCE, long before any document was even
+        loaded, to build the ``TimeSource``/``MockTimeSource`` OBJECT
+        itself (``self.time_source`` - see ``time_source.create_time_
+        source``, called by app.py before ``PresentationController`` is
+        even constructed). Without this method, a deck's own "#CONFIG"
+        override of ``mock_start_datetime`` would update ``self.config``
+        correctly but have NO EFFECT WHATSOEVER on the actual clock driving
+        every zmanim/calendar calculation, silently ignored for the
+        lifetime of the loaded document.
+
+        Only rebuilds when the EFFECTIVE value actually CHANGED since last
+        time - "#CONFIG" re-reads the SAME shape's tag and re-applies the
+        SAME override string on every single reload (see
+        ``_base_config``'s docstring), so re-rebuilding on every reload
+        regardless would keep resetting a `MockTimeSource` back to its
+        configured start value instead of letting it advance normally in
+        real seconds - exactly the bug this whole dedicated-TimeSource
+        design was built to avoid in the first place."""
+        effective = self.config.mock_start_datetime
+        if effective == self._active_mock_start_datetime:
+            return
+        self.time_source = create_time_source(effective)
+        self._active_mock_start_datetime = effective
+        if effective:
+            print(
+                "luah_signage: #CONFIG override set mock_start_datetime, "
+                f"now using MOCKED time starting at {effective}"
+            )
+        else:
+            print("luah_signage: #CONFIG override cleared mock_start_datetime, now using REAL time")
+
     # -- scanning -------------------------------------------------------
     def _prepare_document(self) -> None:
         # #CONFIG:{...} tag: scanned in its OWN early pass, BEFORE
@@ -492,6 +540,15 @@ class PresentationController:
                 print(f"luah_signage: applied #CONFIG override: {overrides}")
             except Exception as exc:
                 print(f"luah_signage: invalid #CONFIG tag ignored ({exc}): {config_json[:200]!r}")
+
+        # Rebuild self.time_source (if needed) BEFORE anything else below
+        # uses it (e.g. #ANCLOCK's self.time_source.now() just below, or
+        # this method's own final self.refresh_content(self.time_source.
+        # now()) call) - see _sync_time_source_with_config's docstring for
+        # why mock_start_datetime needs this special handling, unlike
+        # every other #CONFIG-overridable field (which just works by
+        # virtue of everything else already reading from self.config).
+        self._sync_time_source_with_config()
 
         cholonly_indices: set = set()
         noncholonly_indices: set = set()

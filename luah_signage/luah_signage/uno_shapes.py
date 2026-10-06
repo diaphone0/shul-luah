@@ -3,9 +3,12 @@ UNO-specific shape adapters: wraps raw UNO draw shapes so tagging.py's
 generic (UNO-agnostic) logic can operate on them, plus the analog clock
 shape builder/updater.
 
-Not testable in this dev environment (no LibreOffice installed here) -
-written carefully against the documented UNO Draw/Impress API but should be
-smoke-tested on the actual signage machine.
+Most of this module is written carefully against the documented UNO Draw/
+Impress API but is otherwise untestable in this dev environment (no real
+signage deck/slideshow to drive). `UnoTextShape.set_text_range`'s specific
+formatting-preservation behavior WAS empirically verified against a real
+LibreOffice instance (headless, via its own bundled Python) - see that
+method's docstring for the root cause it works around.
 """
 from __future__ import annotations
 
@@ -18,6 +21,21 @@ from .clock_geometry import Point, Rect
 from .config import ClockStyle
 
 MM_PER_100 = 100  # UNO measurements are in 1/100 mm
+
+# Character formatting properties captured/reapplied by
+# UnoTextShape.set_text_range - covers the common run-level formatting a
+# deck author might apply (bold/italic/size/color/underline/strikeout/
+# font), including the separate Asian/Complex (CTL) property variants that
+# actually govern Hebrew/RTL text rendering in LibreOffice (Western
+# CharWeight/CharHeight alone are not always what's visually applied to
+# Hebrew text - both sets are captured defensively).
+_CHAR_FORMAT_PROPERTIES = (
+    "CharWeight", "CharWeightAsian", "CharWeightComplex",
+    "CharHeight", "CharHeightAsian", "CharHeightComplex",
+    "CharPosture", "CharPostureAsian", "CharPostureComplex",
+    "CharColor", "CharUnderline", "CharStrikeout",
+    "CharFontName", "CharFontNameAsian", "CharFontNameComplex",
+)
 
 
 class UnoTextShape:
@@ -36,6 +54,77 @@ class UnoTextShape:
 
     def set_text(self, text: str) -> None:
         self._shape.setString(text)
+
+    def set_text_range(self, start: int, end: int, text: str) -> None:
+        """Replaces characters [start, end) of the shape's CURRENT text
+        with ``text``, preserving the character formatting (bold/italic/
+        size/color/font/etc.) that range ALREADY had - unlike
+        ``set_text``/``setString`` on the whole shape, which collapses
+        every existing text run/portion into a single new run using one
+        uniform formatting context (the ORIGINAL observed bug: a shape
+        like "בבלי: #DAFYOMIBV" with "בבלי:" bold and the tag not bold
+        would lose the bold formatting entirely once the tag was
+        substituted via a whole-shape ``setString``).
+
+        Formatting is explicitly CAPTURED from the target range and
+        RE-APPLIED after the text is replaced, rather than relying on the
+        replaced text to simply "inherit" the surrounding formatting
+        implicitly. This was found to be necessary (not just a defensive
+        extra step) via direct testing against a real LibreOffice
+        instance: when a shape has two adjacent runs with DIFFERENT
+        formatting (e.g. a bold run immediately followed by a non-bold
+        run) and this range exactly starts at that run boundary, a plain
+        ``cursor.setString(text)`` (and likewise
+        ``xtext.insertString(cursor, text, True)`` with
+        ``bAbsorb=True``) was observed to make the REPLACED text
+        incorrectly inherit the PRECEDING run's formatting instead of its
+        own - i.e. a second tag's rendered value picked up the FIRST
+        tag's bold/size formatting purely because it happened to sit
+        immediately after it in the same shape (reproduced with a real
+        "#HEBDATE #DAYINFO:n" shape from this project's own deck,
+        #HEBDATE bold/28 and #DAYINFO:n regular/24 - after substitution,
+        BOTH became bold/28 without this fix). Capturing the OLD range's
+        own properties BEFORE replacing it and explicitly re-applying them
+        to the NEW range afterward sidesteps this cursor/run-boundary
+        quirk entirely, since the new text's formatting no longer depends
+        on any ambient/inherited cursor state at all.
+
+        No-op (skips the capture/reapply step) when the OLD range is
+        already empty (``start == end``) - there is no existing range to
+        read formatting FROM in that case (e.g. a tag whose rendered
+        value was previously "" and is becoming non-empty for the first
+        time); the new text falls back to whatever formatting the
+        (collapsed) insertion point otherwise provides, matching this
+        method's pre-fix behavior for that specific edge case only."""
+        xtext = self._shape.getText()
+        cursor = xtext.createTextCursor()
+        cursor.gotoStart(False)
+        if start:
+            cursor.goRight(start, False)
+        if end > start:
+            cursor.goRight(end - start, True)
+
+        captured_format: dict = {}
+        if end > start:
+            for prop in _CHAR_FORMAT_PROPERTIES:
+                try:
+                    captured_format[prop] = cursor.getPropertyValue(prop)
+                except Exception:
+                    pass
+
+        cursor.setString(text)
+
+        if text and captured_format:
+            format_cursor = xtext.createTextCursor()
+            format_cursor.gotoStart(False)
+            format_cursor.goRight(start, False)
+            format_cursor.goRight(len(text), True)
+            for prop, value in captured_format.items():
+                try:
+                    format_cursor.setPropertyValue(prop, value)
+                except Exception:
+                    pass
+
 
 
 def is_text_shape(shape) -> bool:

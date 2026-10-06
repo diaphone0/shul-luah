@@ -57,22 +57,45 @@ import os
 import re
 import shlex
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Callable, Iterable, Protocol
 
 from pyzmanim import dafyomi, hdateformat, shiur, zmanim
-from pyzmanim.hebrewcalendar import YomTov, Parshah, get_parshah, get_special_shabbos, get_yom_tov, hdate_gregorian
+from pyzmanim.hdateformat import num_to_h_month
+from pyzmanim.hebrewcalendar import (
+    HDate,
+    YomTov,
+    Parshah,
+    get_omer,
+    get_parshah,
+    get_rosh_chodesh,
+    get_special_shabbos,
+    get_yom_tov,
+    hdate_add_day,
+    hdate_gregorian,
+    is_assur_be_melachah,
+    is_candle_lighting,
+    is_shabbos_mevorchim,
+)
 
 from .zman_context import ZmanContext
 
 # Group 2 matches either "+18"/"-45" (plain minutes) or "+00:30"/"-01:15"
 # (HH:MM duration) - see module docstring. Group 3 (only meaningful for
 # #CMD) matches a ":<...>" argument-string suffix, e.g. "#CMD:<-city tzfat>"
-# captures "-city tzfat" in group 3. The two suffix forms never collide:
-# group 2 only matches if the character right after the tag name is +/-,
-# group 3 only matches if it's a literal ":<" instead.
-TAG_PATTERN = re.compile(r"#([A-Z][A-Z0-9]*)([+-]\d+:\d{2}|[+-]\d+)?(?::<([^>]*)>)?")
+# captures "-city tzfat" in group 3. Group 4 is a newline-formatting
+# suffix: ":n" inserts a newline BEFORE the tag's rendered value, ":na"
+# inserts one AFTER it (e.g. "#DAYINFO:n" / "#DAYINFO:na") - see
+# _apply_newline_format. All three suffix forms never collide: group 2
+# only matches if the character right after the tag name is +/-, group 3
+# only matches if it's a literal ":<" instead, and group 4 only matches a
+# literal ":n"/":na" followed by a non-word character or end-of-string
+# (the trailing ``\b`` prevents it from misfiring on an unrelated
+# ":name"-like suffix that merely happens to start with "n").
+TAG_PATTERN = re.compile(
+    r"#([A-Z][A-Z0-9]*)([+-]\d+:\d{2}|[+-]\d+)?(?::<([^>]*)>)?(?::(na|n)\b)?"
+)
 
 # Tag name handled specially in render_template (does not go through
 # TAG_REGISTRY's uniform (ctx, offset_minutes) -> str signature, since it
@@ -138,6 +161,7 @@ class TextShapeLike(Protocol):
 
     def get_text(self) -> str: ...
     def set_text(self, text: str) -> None: ...
+    def set_text_range(self, start: int, end: int, text: str) -> None: ...
 
 
 def _parse_shell_like_args(raw: str) -> list[str]:
@@ -344,7 +368,7 @@ def _tag_parsha(ctx: ZmanContext, offset_minutes: int) -> str:
 
     special = get_special_shabbos(ctx.shabbos)
     if special != YomTov.CHOL:
-        result += f"\n({hdateformat.yom_tov_format(special)})"
+        result += f" - {hdateformat.yom_tov_format(special)}"
     return result
 
 
@@ -381,17 +405,87 @@ def _tag_limudyomi(ctx: ZmanContext, offset_minutes: int) -> str:
     rambam = shiur.get_rambam(ctx.now, True)
     parts = rambam.split(";", 2)
     if len(parts) == 3:
-        rambam = f"{parts[0]} - {parts[1]}\n{parts[2]}"
+        rambam = f"{parts[0]} - {parts[1]} - {parts[2]}"
     daf_bavli = dafyomi.get_daf_yomi_format(hdate_gregorian(ctx.now).date())
     daf_yerushalmi = dafyomi.get_daf_yomi_format(hdate_gregorian(ctx.now).date(),True)
     mishna_yomi = dafyomi.get_mishna_yomi_format(hdate_gregorian(ctx.now).date())
+    halacha = shiur.get_halacha(ctx.now)
+
     return (
         f"בבלי: {daf_bavli}\n"
         f"ירושלמי: {daf_yerushalmi}\n"
-        f"משניות: {mishna_yomi}\n\n"
-        f'רמב"ם היום:\n{rambam}\n\n'
-        f"תהילים:\n{shiur.tehillim(ctx.now)}"
+        f"משניות: {mishna_yomi}\n"
+        f"הלכה: {halacha}\n"
+        f'רמב"ם: {rambam}\n'
+        f"תהילים: {shiur.tehillim(ctx.now)}"
     )
+
+
+def _tag_mozashtitle(ctx: ZmanContext, offset_minutes: int) -> str:
+    """Returns the motzaei-label (e.g. "מוצאי שבת"/"מוצאי יו\"ט"/"מוצאי
+    יוה\"כ") for whichever day it actually applies to - if TODAY is a
+    shabbos/yom-tov/yom-kippur whose next day is chol, the label is based
+    on today; otherwise it falls back to ``ctx.shabbos`` (the upcoming/
+    current shabbos) instead. Unlike its name might suggest, this NEVER
+    returns an empty string - one of the three labels is always returned."""
+    hd = ctx.now
+    hd_next = HDate(**hd.__dict__)
+    hdate_add_day(hd_next, 1)
+    if not (is_assur_be_melachah(hd) and not is_assur_be_melachah(hd_next)):
+        hd = ctx.shabbos
+    yt = get_yom_tov(hd)
+    if yt == YomTov.YOM_KIPPUR:
+        return 'מוצאי יוה"כ'
+    elif hd.wday == 0:
+        return "מוצאי שבת"
+    else:
+        return 'מוצאי יו"ט'
+
+
+def _tag_dayinfo(ctx: ZmanContext, offset_minutes: int) -> str:
+    """Return extra day details (yom-tov title on non-parshah days, omer,
+    rosh chodesh, candle-lighting/havdalah, daily learning) — everything
+    ``get_day_info`` provides EXCEPT the Hebrew date and the parshah
+    title itself (which have their own dedicated tags ``#HEBDATE`` and
+    ``#PARSHA``)."""
+    lines: list[str] = []
+
+    hd = ctx.now
+    # Build a copy of hd for "next day" (used by Rosh Chodesh & havdalah)
+    hd_next = HDate(**hd.__dict__)
+    hdate_add_day(hd_next, 1)
+
+    # -- Yom Tov / moed title (only on a NON-parshah day - i.e. a weekday
+    # yom tov like Pesach/Sukkos/Rosh Hashanah, NOT an ordinary Shabbos,
+    # which already gets its own title from #PARSHA) --
+    if get_parshah(hd) == Parshah.NOPARSHAH:
+        ytov = get_yom_tov(hd)
+        if ytov != YomTov.CHOL:
+            lines.append(hdateformat.yom_tov_format(ytov))
+
+    # -- Special shabbos note --
+    sp = get_special_shabbos(hd)
+    if sp != YomTov.CHOL:
+        lines.append(f"{hdateformat.yom_tov_format(sp)}")
+
+    # -- Shabbos Mevorchim --
+    if is_shabbos_mevorchim(hd):
+        lines.append("שבת מברכים")
+
+    # -- Sefirat HaOmer --
+    omer = get_omer(hd)
+    if omer:
+        lines.append(f"({omer} בעומר)")
+
+    # -- Rosh Chodesh --
+    if get_rosh_chodesh(hd) == YomTov.ROSH_CHODESH:
+        if hd.day == 1:
+            month_name = num_to_h_month(hd.month, hd.leap)
+        else:
+            month_name = num_to_h_month(hd_next.month, hd_next.leap)
+        lines.append(f"ראש חודש {month_name}")
+
+    return " - ".join(lines)
 
 
 # tag name -> callable(ctx, offset_minutes) -> rendered string
@@ -400,10 +494,19 @@ TAG_REGISTRY: dict[str, Callable[[ZmanContext, int], str]] = {
     "DAYZMANIM": _tag_dayzmanim,
     "FULLZMANIM": _tag_fullzmanim,
     "DAFYOMI": _tag_dafyomi,
+    "DAYINFO": _tag_dayinfo,
     "PARSHA": _tag_parsha,
     "SHABBOS": lambda ctx, off: _fmt_time(zmanim.getelevationsunset(ctx.erev_shabbos, ctx.location), off),
     "MOZASH": lambda ctx, off: _fmt_time(zmanim.gettzais8p5(ctx.shabbos, ctx.location), off),
+    "MOZASHTITLE": _tag_mozashtitle,
     "LIMUDYOMI": _tag_limudyomi,
+    "DAFYOMIBV": lambda ctx, off: dafyomi.get_daf_yomi_format(hdate_gregorian(ctx.now).date()),
+    "DAFYOMIYR": lambda ctx, off: dafyomi.get_daf_yomi_format(hdate_gregorian(ctx.now).date(), True),
+    "MISHNA": lambda ctx, off: dafyomi.get_mishna_yomi_format(hdate_gregorian(ctx.now).date()),
+    "HALACHA": lambda ctx, off: shiur.get_halacha(ctx.now),
+    "RAMBAM": lambda ctx, off: shiur.get_rambam(ctx.now, daily_chapter=False).replace(";", ", "),
+    "TEHILIM": lambda ctx, off: shiur.tehillim(ctx.now),
+    "TANYA": lambda ctx, off: shiur.get_tanya(ctx.now),
     "DICLOCK": lambda ctx, off: hdate_gregorian(ctx.now).strftime("%H:%M"),
     "ALOS72": lambda ctx, off: _fmt_time(zmanim.getalos72(ctx.now, ctx.location), off),
     "SUNRISE": lambda ctx, off: _fmt_time(zmanim.getsunrise(ctx.now, ctx.location), off),
@@ -434,42 +537,133 @@ def contains_known_tag(text: str) -> bool:
     )
 
 
+def _apply_newline_format(value: str, newline_flag: str | None) -> str:
+    """Applies a tag's optional ":n"/":na" newline-formatting suffix (see
+    TAG_PATTERN's group 4) to its already-rendered ``value``: ``"n"``
+    prepends a newline, ``"na"`` appends one, and ``None`` (no suffix)
+    leaves it unchanged. A no-op whenever ``value`` is empty, so a
+    conditionally-empty tag (e.g. ``#DAYINFO`` on a plain weekday with
+    nothing to report) never leaves a stray blank line behind."""
+    if not value or not newline_flag:
+        return value
+    if newline_flag == "n":
+        return "\n" + value
+    return value + "\n"  # "na"
+
+
+def _render_tag_match(match: re.Match, ctx: ZmanContext, cmd_cache: dict[str, str] | None) -> str:
+    """Computes the rendered replacement for a single TAG_PATTERN match -
+    the shared per-tag logic used by both ``render_template`` (whole-string
+    substitution) and ``TrackedShape.refresh`` (formatting-preserving
+    partial update - see its docstring)."""
+    tag_name = match.group(1)
+    if tag_name == CMD_TAG_NAME:
+        key = match.group(3) or ""
+        value = (cmd_cache or {}).get(key, "")
+    else:
+        offset = _parse_offset_minutes(match.group(2))
+        renderer = TAG_REGISTRY.get(tag_name)
+        if renderer is None:
+            return match.group(0)
+        value = renderer(ctx, offset)
+    return _apply_newline_format(value, match.group(4))
+
+
 def render_template(
     template: str,
     ctx: ZmanContext,
     cmd_cache: dict[str, str] | None = None,
 ) -> str:
     """Re-renders ``template`` (a shape's original tag-containing text)
-    against ``ctx``. ``#CMD:<...>`` tags are looked up in ``cmd_cache``
-    (populated separately/infrequently by ``refresh_cmd_cache`` - see
-    module docstring) rather than executed here - a key not yet present
-    in the cache (e.g. before the first cmd-refresh tick has run)
-    substitutes as an empty string, not an error placeholder."""
+    against ``ctx``, returning the resulting FULL string. ``#CMD:<...>``
+    tags are looked up in ``cmd_cache`` (populated separately/infrequently
+    by ``refresh_cmd_cache`` - see module docstring) rather than executed
+    here - a key not yet present in the cache (e.g. before the first
+    cmd-refresh tick has run) substitutes as an empty string, not an error
+    placeholder.
+
+    Note: this returns a plain string with no formatting information -
+    it's used for tests/standalone rendering and by ``find_cmd_arg_keys``-
+    style callers. ``TrackedShape.refresh`` does NOT call this for live
+    shape updates (see its own docstring for why) - the two must stay
+    behaviorally equivalent in terms of WHAT each tag renders to, via the
+    shared ``_render_tag_match`` helper above."""
     def _replace(match: re.Match) -> str:
-        tag_name = match.group(1)
-        if tag_name == CMD_TAG_NAME:
-            key = match.group(3) or ""
-            return (cmd_cache or {}).get(key, "")
-        offset = _parse_offset_minutes(match.group(2))
-        renderer = TAG_REGISTRY.get(tag_name)
-        if renderer is None:
-            return match.group(0)
-        return renderer(ctx, offset)
+        return _render_tag_match(match, ctx, cmd_cache)
 
     return TAG_PATTERN.sub(_replace, template)
+
+
+def _split_template(template: str) -> tuple[list[str], list[re.Match]]:
+    """Splits ``template`` into alternating literal/static segments and
+    tag matches: ``statics[0] + matches[0].group(0) + statics[1] +
+    matches[1].group(0) + ... + statics[-1]`` reconstructs ``template``
+    exactly (``len(statics) == len(matches) + 1``)."""
+    statics: list[str] = []
+    matches: list[re.Match] = []
+    pos = 0
+    for m in TAG_PATTERN.finditer(template):
+        statics.append(template[pos:m.start()])
+        matches.append(m)
+        pos = m.end()
+    statics.append(template[pos:])
+    return statics, matches
 
 
 @dataclass
 class TrackedShape:
     """A shape whose text template contains one or more known tags, plus
     the original (unmodified) template text to re-render from on every
-    refresh."""
+    refresh.
+
+    ``refresh`` deliberately does NOT call ``shape.set_text(whole_string)``
+    (a bulk ``setString`` on the whole shape) - doing so replaces every
+    text run/portion with a single new run using one uniform formatting
+    context, silently discarding any per-run formatting (bold/italic/
+    color/etc.) a deck author applied to parts of the shape's text that
+    aren't themselves a tag (e.g. a bold "בבלי:" label next to a
+    non-bold "#DAFYOMIBV" tag). Instead, each tag's rendered value is
+    updated IN PLACE via ``shape.set_text_range(start, end, text)`` -
+    touching ONLY the characters that actually need to change, which for
+    a real UNO shape means replacing the content of an existing text
+    cursor/range rather than the whole shape, preserving that range's
+    (and every other untouched run's) own character formatting.
+
+    Position bookkeeping: the live shape's actual text is NEVER re-read
+    during ``refresh`` - positions are tracked purely arithmetically,
+    since the template's static segments never change and each tag's
+    CURRENT rendered length is already known from the previous refresh
+    (or, on the very first refresh, equals the length of the tag's own
+    literal matched text, e.g. ``"#SUNRISE-18"``, since the live shape
+    text still literally equals ``template`` at that point)."""
 
     shape: TextShapeLike
     template: str
+    _static_segments: list[str] = field(init=False, repr=False, compare=False)
+    _tag_matches: list[re.Match] = field(init=False, repr=False, compare=False)
+    _current_values: list[str] | None = field(default=None, init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        self._static_segments, self._tag_matches = _split_template(self.template)
 
     def refresh(self, ctx: ZmanContext, cmd_cache: dict[str, str] | None = None) -> None:
-        self.shape.set_text(render_template(self.template, ctx, cmd_cache))
+        if not self._tag_matches:
+            return
+        if self._current_values is None:
+            # First refresh: the live shape text still literally equals
+            # `self.template` (nothing substituted yet), so each tag's
+            # CURRENT text is its own raw matched substring.
+            self._current_values = [m.group(0) for m in self._tag_matches]
+
+        offset = 0
+        for i, match in enumerate(self._tag_matches):
+            offset += len(self._static_segments[i])
+            old_value = self._current_values[i]
+            new_value = _render_tag_match(match, ctx, cmd_cache)
+            if new_value != old_value:
+                self.shape.set_text_range(offset, offset + len(old_value), new_value)
+                self._current_values[i] = new_value
+            offset += len(self._current_values[i])
 
 
 def scan_shapes_for_tags(shapes: list[TextShapeLike]) -> list[TrackedShape]:

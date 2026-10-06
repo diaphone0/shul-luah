@@ -24,6 +24,9 @@ class FakeShape:
     def set_text(self, text: str) -> None:
         self._text = text
 
+    def set_text_range(self, start: int, end: int, text: str) -> None:
+        self._text = self._text[:start] + text + self._text[end:]
+
 
 def _ctx(dt: datetime):
     return build_zman_context(dt, JERUSALEM, eretz_yisroel=True, timezone="Asia/Jerusalem")
@@ -41,6 +44,53 @@ def test_tag_pattern_parses_hhmm_offset():
     assert len(matches) == 2
     assert matches[0].group(1) == "SUNSET" and matches[0].group(2) == "+00:30"
     assert matches[1].group(1) == "TZAIS" and matches[1].group(2) == "-01:15"
+
+
+def test_tag_pattern_parses_newline_format_suffix():
+    matches = list(tagging.TAG_PATTERN.finditer("#DAYINFO:n and #DAYINFO:na"))
+    assert len(matches) == 2
+    assert matches[0].group(1) == "DAYINFO" and matches[0].group(4) == "n"
+    assert matches[1].group(1) == "DAYINFO" and matches[1].group(4) == "na"
+
+
+def test_tag_pattern_no_newline_format_suffix_by_default():
+    matches = list(tagging.TAG_PATTERN.finditer("#DAYINFO"))
+    assert len(matches) == 1
+    assert matches[0].group(4) is None
+
+
+def test_tag_pattern_does_not_misfire_on_unrelated_colon_suffix():
+    # ":nice" starts with "n" but is NOT the ":n"/":na" suffix - the
+    # trailing \b must prevent a false-positive partial match.
+    matches = list(tagging.TAG_PATTERN.finditer("#DAYINFO:nice"))
+    assert len(matches) == 1
+    assert matches[0].group(0) == "#DAYINFO"
+    assert matches[0].group(4) is None
+
+
+def test_apply_newline_format_prepends_and_appends():
+    assert tagging._apply_newline_format("value", "n") == "\nvalue"
+    assert tagging._apply_newline_format("value", "na") == "value\n"
+    assert tagging._apply_newline_format("value", None) == "value"
+
+
+def test_apply_newline_format_is_noop_for_empty_value():
+    assert tagging._apply_newline_format("", "n") == ""
+    assert tagging._apply_newline_format("", "na") == ""
+
+
+def test_render_template_newline_n_prepends_newline():
+    ctx = _ctx(datetime(2024, 6, 21, 12, 0, 0))
+    base_value = tagging.render_template("#SUNRISE", ctx)
+    result = tagging.render_template("Sunrise: #SUNRISE:n", ctx)
+    assert result == f"Sunrise: \n{base_value}"
+
+
+def test_render_template_newline_na_appends_newline():
+    ctx = _ctx(datetime(2024, 6, 21, 12, 0, 0))
+    base_value = tagging.render_template("#SUNRISE", ctx)
+    result = tagging.render_template("#SUNRISE:na after", ctx)
+    assert result == f"{base_value}\n after"
 
 
 def test_render_template_sunrise_sunset():
@@ -167,12 +217,111 @@ def test_tracked_shape_refresh_reuses_template():
     assert tracked.template == "Time: #SUNRISE"  # template never mutated
 
 
+class RecordingFakeShape(FakeShape):
+    """FakeShape that records every set_text_range call (start, end, text)
+    - used to verify TrackedShape.refresh only ever touches a tag's own
+    span, never the surrounding static text (the formatting-preservation
+    guarantee - see uno_shapes.UnoTextShape.set_text_range's docstring)."""
+
+    def __init__(self, text: str):
+        super().__init__(text)
+        self.range_calls: list[tuple[int, int, str]] = []
+
+    def set_text_range(self, start: int, end: int, text: str) -> None:
+        self.range_calls.append((start, end, text))
+        super().set_text_range(start, end, text)
+
+
+def test_tracked_shape_refresh_only_touches_tag_span_not_static_text():
+    # Mirrors the user-reported bug: a bold static label next to a
+    # non-bold tag ("בבלי: #DAFYOMIBV") lost the label's bold formatting
+    # because the old implementation called shape.set_text(whole_string).
+    # The fix must only ever call set_text_range for the TAG's own
+    # character span, never touch/replace the "Label: " prefix at all.
+    shape = RecordingFakeShape("Label: #SUNRISE")
+    tracked = tagging.TrackedShape(shape=shape, template="Label: #SUNRISE")
+    ctx = _ctx(datetime(2024, 6, 21, 12, 0, 0))
+    tracked.refresh(ctx)
+    assert shape.get_text().startswith("Label: ")
+    assert len(shape.range_calls) == 1
+    start, end, _ = shape.range_calls[0]
+    assert start == len("Label: ")  # only the tag span was replaced
+    assert end == len("Label: #SUNRISE")
+
+
+def test_tracked_shape_refresh_does_not_rewrite_unchanged_tag_value():
+    # Calling refresh twice with the SAME effective ctx must not issue a
+    # second set_text_range call for a tag whose rendered value didn't
+    # change (avoids an unnecessary redraw/formatting churn, consistent
+    # with this project's existing "skip redundant writes" convention).
+    shape = RecordingFakeShape("#SUNRISE")
+    tracked = tagging.TrackedShape(shape=shape, template="#SUNRISE")
+    ctx = _ctx(datetime(2024, 6, 21, 12, 0, 0))
+    tracked.refresh(ctx)
+    tracked.refresh(ctx)
+    assert len(shape.range_calls) == 1
+
+
+def test_tracked_shape_refresh_handles_multiple_tags_with_varying_lengths():
+    # Two tags whose rendered VALUE LENGTHS can legitimately differ across
+    # refreshes - confirms the offset bookkeeping correctly accounts for
+    # an earlier tag's length change shifting a later tag's position.
+    shape = FakeShape("#SUNRISE to #SUNSET today")
+    tracked = tagging.TrackedShape(shape=shape, template="#SUNRISE to #SUNSET today")
+    tracked.refresh(_ctx(datetime(2024, 6, 21, 12, 0, 0)))
+    summer_text = shape.get_text()
+    assert summer_text.endswith(" today")
+    assert " to " in summer_text
+    tracked.refresh(_ctx(datetime(2024, 12, 21, 12, 0, 0)))
+    winter_text = shape.get_text()
+    assert winter_text.endswith(" today")
+    assert " to " in winter_text
+    assert summer_text != winter_text
+
+
+def test_tracked_shape_refresh_applies_newline_format_suffix():
+    # The live shape text initially equals the template VERBATIM, including
+    # the literal ":n" suffix - confirms TrackedShape's first-refresh
+    # bookkeeping (which seeds "current value" from the raw matched tag
+    # text) correctly accounts for the suffix being part of that raw match.
+    shape = FakeShape("Sunrise: #SUNRISE:n")
+    tracked = tagging.TrackedShape(shape=shape, template="Sunrise: #SUNRISE:n")
+    ctx = _ctx(datetime(2024, 6, 21, 12, 0, 0))
+    tracked.refresh(ctx)
+    base_value = tagging.render_template("#SUNRISE", ctx)
+    assert shape.get_text() == f"Sunrise: \n{base_value}"
+    # A second refresh with the same ctx must not re-issue a write either.
+    tracked2 = tagging.TrackedShape(shape=RecordingFakeShape("#SUNRISE:n"), template="#SUNRISE:n")
+    tracked2.refresh(ctx)
+    tracked2.refresh(ctx)
+    assert len(tracked2.shape.range_calls) == 1
+
+
+
 def test_parsha_tag_produces_nonempty_hebrew_text():
     # Thursday before Parshas Shemot (Shabbos Jan 6 2024)
     ctx = _ctx(datetime(2024, 1, 4, 12, 0, 0))
     text = tagging.render_template("#PARSHA", ctx)
     assert text.strip()
     assert "שמות" in text
+
+
+def test_dayinfo_tag_includes_yom_tov_title_on_non_parshah_weekday_yomtov():
+    # Pesach day 1 2024 = 23 Apr 2024 (a Tuesday - not Shabbos, no parshah).
+    ctx = _ctx(datetime(2024, 4, 23, 12, 0, 0))
+    text = tagging.render_template("#DAYINFO", ctx)
+    assert "פסח" in text
+
+
+def test_dayinfo_tag_omits_yom_tov_title_on_parshah_shabbos():
+    # Shabbos Jan 6 2024 (Parshas Shemot) - a parshah day, so #DAYINFO
+    # must NOT also include a yom-tov/moed title line (that's #PARSHA's
+    # job, not #DAYINFO's, per the VBA logic this mirrors). Note: other
+    # #DAYINFO lines (e.g. Shabbos Mevorchim) may legitimately still
+    # contain "שבת" - only the parshah NAME itself must be absent.
+    ctx = _ctx(datetime(2024, 1, 6, 12, 0, 0))
+    text = tagging.render_template("#DAYINFO", ctx)
+    assert "שמות" not in text
 
 
 def test_dafyomi_tag_matches_known_start_date():
