@@ -262,6 +262,55 @@ def test_tracked_shape_refresh_does_not_rewrite_unchanged_tag_value():
     assert len(shape.range_calls) == 1
 
 
+class NudgeableFakeShape(RecordingFakeShape):
+    """RecordingFakeShape that also tracks nudge() calls - see
+    uno_shapes.UnoTextShape.nudge/_nudge_position's docstrings for why
+    this exists (a LibreOffice slideshow repaint workaround for tagged
+    text shapes on a slide with no analog clock)."""
+
+    def __init__(self, text: str):
+        super().__init__(text)
+        self.nudge_calls = 0
+
+    def nudge(self) -> None:
+        self.nudge_calls += 1
+
+
+def test_tracked_shape_refresh_nudges_shape_only_when_value_changed():
+    shape = NudgeableFakeShape("#SUNRISE")
+    tracked = tagging.TrackedShape(shape=shape, template="#SUNRISE")
+    summer_ctx = _ctx(datetime(2024, 6, 21, 12, 0, 0))
+    tracked.refresh(summer_ctx, nudge=True)
+    assert shape.nudge_calls == 1
+    # Same ctx again - value unchanged, must NOT nudge again.
+    tracked.refresh(summer_ctx, nudge=True)
+    assert shape.nudge_calls == 1
+    # A different ctx whose rendered value differs - nudges again.
+    winter_ctx = _ctx(datetime(2024, 12, 21, 12, 0, 0))
+    tracked.refresh(winter_ctx, nudge=True)
+    assert shape.nudge_calls == 2
+
+
+def test_tracked_shape_refresh_never_nudges_when_nudge_false():
+    shape = NudgeableFakeShape("#SUNRISE")
+    tracked = tagging.TrackedShape(shape=shape, template="#SUNRISE")
+    ctx = _ctx(datetime(2024, 6, 21, 12, 0, 0))
+    tracked.refresh(ctx, nudge=False)
+    assert shape.nudge_calls == 0
+
+
+def test_tracked_shape_refresh_nudge_true_is_safe_without_nudge_method():
+    # A shape (e.g. a plain test double) with no nudge() method at all
+    # must not raise even when nudge=True - TrackedShape.refresh looks it
+    # up via getattr(..., None) rather than assuming every TextShapeLike
+    # implementation provides one.
+    shape = RecordingFakeShape("#SUNRISE")
+    tracked = tagging.TrackedShape(shape=shape, template="#SUNRISE")
+    ctx = _ctx(datetime(2024, 6, 21, 12, 0, 0))
+    tracked.refresh(ctx, nudge=True)  # must not raise
+    assert shape.get_text() != "#SUNRISE"
+
+
 def test_tracked_shape_refresh_handles_multiple_tags_with_varying_lengths():
     # Two tags whose rendered VALUE LENGTHS can legitimately differ across
     # refreshes - confirms the offset bookkeeping correctly accounts for

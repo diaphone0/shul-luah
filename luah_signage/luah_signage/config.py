@@ -170,16 +170,66 @@ class LuahConfig:
     # clock(s), matching how an earlier version of this code behaved.
     debug_repaint_update_offscreen_clocks: bool = True
     # EXPERIMENTAL, default OFF: after a clock hand's PolyPolygon is
-    # rewritten, also toggles that hand shape's Visible property off then
-    # back on immediately - forcing it to be removed and re-inserted into
-    # the render tree, which may force a stubborn rendering backend to
-    # actually repaint it even if a plain property write alone doesn't
-    # seem to. This is a heavier-handed workaround than the other toggles
-    # above (not merely disabling an optimization, but adding a new one)
-    # and may itself cause a very brief visible blink of the hand - only
-    # try this if disabling the other debug_repaint_* toggles individually
-    # doesn't resolve the frozen-hands symptom on a given machine.
+    # rewritten, also nudges that hand shape's Position by 1/100 mm and
+    # immediately back (see uno_shapes._nudge_position's docstring) -
+    # forcing a tiny, inconsequential geometry perturbation that may
+    # prompt a stubborn rendering backend to actually repaint the shape
+    # even if a plain property write alone doesn't seem to. This is a
+    # heavier-handed workaround than the other toggles above (not merely
+    # disabling an optimization, but adding a new one) - only try this if
+    # disabling the other debug_repaint_* toggles individually doesn't
+    # resolve the frozen-hands symptom on a given machine. (An earlier
+    # version of this nudge toggled the shape's Visible property instead
+    # - switched to a Position-based nudge after that approach was found,
+    # for the analogous text-shape nudge below, to risk a shape
+    # genuinely vanishing from the live slideshow view - see
+    # debug_repaint_nudge_text_shapes and _nudge_position's docstring for
+    # the full story; both nudges now share the same, confirmed-safe
+    # mechanism.)
     debug_repaint_nudge_shape: bool = False
+    # EXPERIMENTAL, default OFF: the text-shape equivalent of
+    # debug_repaint_nudge_shape above - after a tagged text shape's
+    # rendered value actually changes (e.g. #DICLOCK's "HH:MM"), also
+    # nudges that shape's Position by 1/100 mm and immediately back (see
+    # uno_shapes._nudge_position's docstring). Added specifically because
+    # a #DICLOCK tag on a slide with NO analog clock shape was confirmed
+    # (via debug_log_content_refresh showing the tag's value genuinely
+    # changing in the document model every tick) to never visibly
+    # repaint in the live slideshow, while an identical #DICLOCK tag on a
+    # slide that ALSO has an analog clock updates visibly every tick -
+    # the clock hands' own per-second PolyPolygon writes incidentally
+    # force that slide's whole view to repaint, masking the same
+    # underlying LibreOffice rendering quirk there.
+    #
+    # Uses a POSITION nudge rather than a Visible-toggle nudge (unlike
+    # debug_repaint_nudge_shape, used for clock hands) because a Visible
+    # off/on toggle was empirically confirmed - on a real live fullscreen
+    # slideshow - to make a tagged text shape genuinely VANISH after its
+    # next content change, only reappearing once the slideshow navigated
+    # away from and back to that slide. A Position nudge does not carry
+    # that risk (confirmed fixed - see uno_shapes._nudge_position's
+    # docstring for the full explanation), though it is still marked
+    # EXPERIMENTAL/default-off out of caution for any other unanticipated
+    # per-machine rendering quirk. Only try this if a slide's tagged text
+    # appears frozen despite debug_log_content_refresh confirming its
+    # value IS changing.
+    debug_repaint_nudge_text_shapes: bool = False
+    # For DEBUGGING ONLY: when True, prints a line to stdout every time
+    # refresh_content() runs (with the tick's timestamp and the current
+    # slide index) and, for every tagged shape whose rendered value
+    # actually changed since the previous refresh, a second line showing
+    # the tag's own template text (e.g. "#DICLOCK") plus its old and new
+    # rendered values - confirming BOTH that the content-refresh tick is
+    # actually firing on schedule AND that a specific tag's underlying
+    # text genuinely changed in the document model that tick, independent
+    # of whether the change is visibly redrawn on screen. Intended to
+    # rule out "the refresh never happens/never changes the tag" as an
+    # explanation for a tag that appears frozen on screen, isolating the
+    # remaining possibility to a LibreOffice rendering/repaint quirk
+    # instead. Leave False for normal/production use (adds one extra live
+    # getString() round-trip per tagged shape, per tick, only to detect
+    # whether a print is warranted).
+    debug_log_content_refresh: bool = False
     # Path/command-line for the "#CMD:<args>" tag (see tagging.py's module
     # docstring): a shell-like string (shlex-split) giving the command to
     # run - e.g. a direct executable path, OR an interpreter + script path
@@ -324,6 +374,8 @@ def load_config(path: Path | None = None) -> LuahConfig:
             "debug_repaint_update_offscreen_clocks", True
         ),
         debug_repaint_nudge_shape=data.get("debug_repaint_nudge_shape", False),
+        debug_repaint_nudge_text_shapes=data.get("debug_repaint_nudge_text_shapes", False),
+        debug_log_content_refresh=data.get("debug_log_content_refresh", False),
         cmd_tag_executable=data.get("cmd_tag_executable"),
         cmd_tag_timeout_seconds=data.get("cmd_tag_timeout_seconds", 10.0),
         cmd_tag_global_args=data.get("cmd_tag_global_args", []),

@@ -27,6 +27,8 @@
   "debug_repaint_skip_unchanged_clock_writes": true,
   "debug_repaint_update_offscreen_clocks": true,
   "debug_repaint_nudge_shape": false,
+  "debug_repaint_nudge_text_shapes": false,
+  "debug_log_content_refresh": false,
   "cmd_tag_executable": null,
   "cmd_tag_timeout_seconds": 10.0,
   "cmd_tag_global_args": [],

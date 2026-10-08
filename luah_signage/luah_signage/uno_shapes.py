@@ -38,6 +38,57 @@ _CHAR_FORMAT_PROPERTIES = (
 )
 
 
+def _nudge_position(shape) -> None:
+    """Moves ``shape`` right by 1 (1/100 mm) and immediately back to its
+    original position - an experimental workaround for a LibreOffice
+    slideshow rendering quirk where a shape's property write (a clock
+    hand's PolyPolygon, or a tagged text shape's run content) updates the
+    document model correctly but the live slideshow view doesn't always
+    visibly repaint that shape on its own. Used by BOTH ``_refresh_hand``
+    (clock hands - see LuahConfig.debug_repaint_nudge_shape) and
+    ``UnoTextShape.nudge`` (tagged text shapes - see LuahConfig.
+    debug_repaint_nudge_text_shapes).
+
+    Why a Position nudge rather than toggling Visible (an earlier version
+    of this function did exactly that for both use cases): empirically
+    confirmed - live, on the real fullscreen slideshow, not just headless
+    - that toggling a tagged TEXT shape's Visible property off then
+    immediately back on does NOT reliably restore its visibility in the
+    RUNNING slideshow view - the shape genuinely vanished after its first
+    post-nudge content change and only reappeared once the slideshow
+    navigated away from and back to that slide (i.e. a full slide
+    re-entry, which independently resyncs every shape's visibility from
+    the document model). This suggests Impress's live slideshow engine
+    tracks a running show's per-shape "is this shown right now" state
+    somewhat independently of the document model's own Visible property,
+    and a rapid off/on toggle can race that internal state rather than
+    reliably forcing an immediate repaint. A Position nudge sidesteps
+    this risk entirely by never touching visibility-related state at all
+    - and was adopted for clock hands too (even though no equivalent
+    vanishing was ever reported for them) simply to keep both nudge code
+    paths using the same, confirmed-safe mechanism rather than keeping
+    two different ones around.
+
+    The shape's Position UNO struct is a plain value type (not a live
+    reference), so mutating a local copy and re-assigning it back to the
+    ORIGINAL value afterward leaves the shape's final, settled position
+    bit-for-bit identical to before this function ran - confirmed via a
+    real-document round-trip test (capture Position before, nudge
+    repeatedly, re-read Position after: byte-for-byte identical X/Y every
+    time, no drift whatsoever). Swallows any exception (e.g. shape
+    disposed mid-tick) rather than letting a cosmetic nudge crash an
+    otherwise-successful refresh."""
+    try:
+        pos = shape.Position
+        original_x = pos.X
+        pos.X = original_x + 1
+        shape.Position = pos
+        pos.X = original_x
+        shape.Position = pos
+    except Exception:
+        pass
+
+
 class UnoTextShape:
     """Adapts a raw UNO shape to the TextShapeLike protocol expected by
     tagging.py (get_text/set_text)."""
@@ -54,6 +105,15 @@ class UnoTextShape:
 
     def set_text(self, text: str) -> None:
         self._shape.setString(text)
+
+    def nudge(self) -> None:
+        """See module-level _nudge_position's docstring for why BOTH
+        this (tagged text shapes) and clock hands use a position-based
+        nudge rather than toggling Visible - called by tagging.
+        TrackedShape.refresh after a tag's rendered value actually
+        changes, ONLY when LuahConfig.debug_repaint_nudge_text_shapes is
+        True."""
+        _nudge_position(self._shape)
 
     def set_text_range(self, start: int, end: int, text: str) -> None:
         """Replaces characters [start, end) of the shape's CURRENT text
@@ -346,11 +406,12 @@ def _refresh_hand(
     perfectly static. Skipping the property write entirely when nothing
     actually needs to change avoids this residual artifact.
 
-    `nudge_shape=True` (see LuahConfig.debug_repaint_nudge_shape) toggles
-    the shape's Visible property off then back on immediately after
-    writing its PolyPolygon, whenever a write actually happens - an
-    experimental, heavier-handed attempt to force a stubborn rendering
-    backend to notice the change, at the risk of a brief visible blink."""
+    `nudge_shape=True` (see LuahConfig.debug_repaint_nudge_shape) nudges
+    the shape's Position by 1/100 mm and immediately back immediately
+    after writing its PolyPolygon, whenever a write actually happens - an
+    experimental attempt to force a stubborn rendering backend to notice
+    the change (see _nudge_position's docstring for why a Position nudge
+    is used here rather than toggling Visible)."""
     last_angle = getattr(clock, last_angle_attr)
     stabilized = clock_geometry.stabilize_angle(raw_angle_deg, last_angle)
     changed = last_angle is None or stabilized != last_angle
@@ -360,9 +421,5 @@ def _refresh_hand(
     tip, tail = clock_geometry.hand_endpoints(clock.center, stabilized, tip_length, clock.tail_length)
     _set_hand_points(shape, tip, tail)
     if nudge_shape:
-        try:
-            shape.Visible = False
-            shape.Visible = True
-        except Exception:
-            pass
+        _nudge_position(shape)
 

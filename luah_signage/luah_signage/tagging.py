@@ -676,7 +676,28 @@ class TrackedShape:
     def __post_init__(self) -> None:
         self._static_segments, self._tag_matches = _split_template(self.template)
 
-    def refresh(self, ctx: ZmanContext, cmd_cache: dict[str, str] | None = None) -> None:
+    def refresh(self, ctx: ZmanContext, cmd_cache: dict[str, str] | None = None, nudge: bool = False) -> None:
+        """Re-renders every tag in this shape's template against ``ctx``
+        (and ``cmd_cache``, for any #CMD tag), updating only the ranges
+        whose rendered value actually changed since the last refresh (see
+        this class's own docstring for why only changed ranges are
+        touched at all).
+
+        ``nudge=True`` (see LuahConfig.debug_repaint_nudge_text_shapes and
+        uno_shapes._nudge_position's docstring) additionally nudges the
+        shape's Position by a sub-pixel amount and immediately back right
+        after a changed range's text is written - an experimental
+        workaround for a LibreOffice slideshow rendering quirk where a
+        shape's text genuinely changes in the document model but the live
+        slideshow view never visibly repaints it (confirmed to
+        specifically affect a #DICLOCK tag on a slide with no analog
+        clock shape providing an incidental repaint via its own
+        per-second property writes). A no-op (never calls
+        ``self.shape.nudge()``) on a refresh where NOTHING in this shape
+        actually changed, and silently does nothing at all if
+        ``self.shape`` has no ``nudge`` method (e.g. a plain test double)
+        - only real UNO shapes (uno_shapes.UnoTextShape) are expected to
+        provide one."""
         if not self._tag_matches:
             return
         if self._current_values is None:
@@ -685,6 +706,7 @@ class TrackedShape:
             # CURRENT text is its own raw matched substring.
             self._current_values = [m.group(0) for m in self._tag_matches]
 
+        changed = False
         offset = 0
         for i, match in enumerate(self._tag_matches):
             offset += len(self._static_segments[i])
@@ -693,7 +715,13 @@ class TrackedShape:
             if new_value != old_value:
                 self.shape.set_text_range(offset, offset + len(old_value), new_value)
                 self._current_values[i] = new_value
+                changed = True
             offset += len(self._current_values[i])
+
+        if changed and nudge:
+            nudge_method = getattr(self.shape, "nudge", None)
+            if nudge_method is not None:
+                nudge_method()
 
 
 def scan_shapes_for_tags(shapes: list[TextShapeLike]) -> list[TrackedShape]:

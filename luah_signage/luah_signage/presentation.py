@@ -933,6 +933,12 @@ class PresentationController:
     def refresh_content(self, now: datetime) -> None:
         if not self.tracked_shapes and not self._slide_day_mode:
             return
+        debug_log = self.config.debug_log_content_refresh
+        if debug_log:
+            print(
+                f"luah_signage[debug]: refresh_content tick at {now} "
+                f"(current_slide={self._last_known_slide_index})"
+            )
         ctx = build_zman_context(
             now=now,
             location=self.config.location,
@@ -941,11 +947,22 @@ class PresentationController:
         )
         if self.tracked_shapes:
             use_lock = self.config.debug_repaint_lock_controllers
+            nudge_text_shapes = self.config.debug_repaint_nudge_text_shapes
             if use_lock:
                 self.document.lockControllers()
             try:
                 for tracked in self.tracked_shapes:
-                    tracked.refresh(ctx, cmd_cache=self._cmd_cache)
+                    if debug_log:
+                        before = tracked.shape.get_text()
+                        tracked.refresh(ctx, cmd_cache=self._cmd_cache, nudge=nudge_text_shapes)
+                        after = tracked.shape.get_text()
+                        if after != before:
+                            print(
+                                f"luah_signage[debug]: tag changed template={tracked.template!r} "
+                                f"old={before!r} new={after!r}"
+                            )
+                    else:
+                        tracked.refresh(ctx, cmd_cache=self._cmd_cache, nudge=nudge_text_shapes)
             finally:
                 if use_lock:
                     self.document.unlockControllers()
