@@ -91,7 +91,7 @@ class DynamicSlideAdvancer:
         self._entered_at = None
         self._prepared_at = None
 
-    def on_tick(self, current_slide_index: int, now: float) -> str:
+    def on_tick(self, current_slide_index: int, now: float, force_advance: bool = False) -> str:
         """Call once per tick with the slideshow's current slide index and
         the current monotonic time. Returns one of:
         - "none": nothing to do this tick.
@@ -100,13 +100,14 @@ class DynamicSlideAdvancer:
           should (re-)apply suppression to this slide (idempotent - safe to
           call even if already suppressed, e.g. if the show loops back to a
           previously-visited slide).
-        - "prepare_advance": this slide's original duration has elapsed;
-          the caller should restore the NEXT slide's (the one about to
-          become current, NOT this one - see module docstring) original
-          transition properties now, but NOT advance yet - `on_tick` will
-          return "advance" once `transition_settle_seconds` has passed,
-          giving the transition property change time to take effect
-          before the slideshow actually moves on.
+        - "prepare_advance": this slide's original duration has elapsed (OR
+          `force_advance=True` was passed - see below); the caller should
+          restore the NEXT slide's (the one about to become current, NOT
+          this one - see module docstring) original transition properties
+          now, but NOT advance yet - `on_tick` will return "advance" once
+          `transition_settle_seconds` has passed, giving the transition
+          property change time to take effect before the slideshow
+          actually moves on.
         - "advance": the settle period has elapsed; the caller should now
           command the slideshow to advance to the next slide, immediately
           re-suppress that next slide's transition properties (they were
@@ -116,7 +117,28 @@ class DynamicSlideAdvancer:
         Unmanaged slide indices (not registered via `register`) always
         return "none" - the caller should leave them to Impress's native
         behavior entirely (untouched, since we never modified their
-        properties)."""
+        properties).
+
+        `force_advance=True` (the caller should pass this when the
+        CURRENTLY current slide has just become HIDDEN - e.g. a
+        #CHOLONLY/#NONCHOLONLY day-mode flip caught it mid-display - and
+        the show therefore needs to move off of it immediately,
+        regardless of its own authored Duration/"advance on click only"
+        setting) makes this slide immediately eligible to enter the
+        "prepare_advance" -> (settle) -> "advance" sequence on THIS tick,
+        bypassing the normal `timing.duration_seconds` elapsed-time check
+        entirely (and even overriding a `duration_seconds <= 0` "manual
+        advance only" slide, which would otherwise never trigger this
+        sequence on its own). Still goes through the SAME settle-delay
+        dance as a normal timed advance (not an instant cut) - reusing
+        this one state machine for both cases is what lets a forced
+        advance due to day-mode visibility changing still play its
+        destination slide's authored transition effect correctly, rather
+        than needing a separate, cruder "just cut to the next slide"
+        code path with no transition at all. Has no effect once already
+        mid-"prepare_advance"/settling (that sequence always runs to
+        completion via the normal settle-based check below, whether it
+        was entered via a forced or a natural duration-elapsed trigger)."""
         if current_slide_index != self._current_index:
             self._current_index = current_slide_index
             self._entered_at = now
@@ -130,6 +152,10 @@ class DynamicSlideAdvancer:
             if now - self._prepared_at >= self.transition_settle_seconds:
                 return "advance"
             return "none"
+
+        if force_advance:
+            self._prepared_at = now
+            return "prepare_advance"
 
         timing = self._timings[current_slide_index]
         if timing.duration_seconds <= 0:
@@ -146,3 +172,27 @@ class DynamicSlideAdvancer:
         timing correctly rather than immediately re-triggering "advance"."""
         self._entered_at = None
         self._prepared_at = None
+
+    def cancel_prepared_advance(self, now: float) -> None:
+        """Call instead of actually advancing, when `on_tick` returned
+        `"prepare_advance"` but the caller determines there is nowhere to
+        actually advance TO (e.g. the only currently-visible slide in the
+        deck is this one itself, so the computed "next visible slide"
+        would just be this same slide looping back to itself - see
+        presentation.py's `poll_slide_advance`, which is the only caller
+        of this method).
+
+        Resets `_prepared_at` back to `None` (so `on_tick` stops
+        immediately returning `"advance"` on every subsequent tick - which
+        it otherwise would, forever, since nothing ever clears a set
+        `_prepared_at` except an actual advance or this method) AND resets
+        `_entered_at` to `now` (restarting this slide's own
+        duration-elapsed timer from scratch, exactly as if it had just
+        been freshly (re-)entered) - this lets a LATER, genuine advance
+        attempt be retried normally after another full `duration_seconds`
+        elapses (e.g. once a day-mode flip elsewhere in the deck makes a
+        real destination slide visible again), rather than either getting
+        stuck retrying every single tick forever, or never being retried
+        again at all."""
+        self._prepared_at = None
+        self._entered_at = now

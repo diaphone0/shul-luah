@@ -39,6 +39,7 @@ from __future__ import annotations
 import math
 import shutil
 import tempfile
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -375,6 +376,22 @@ class PresentationController:
         # tracked shapes (recomputed fresh on every _prepare_document) -
         # this is what refresh_cmd_tags actually iterates over.
         self._cmd_arg_keys: set[str] = set()
+        # The background thread (if any) currently running
+        # tagging.refresh_cmd_cache - see refresh_cmd_tags's docstring for
+        # why this runs off the main tick loop's thread at all. None when
+        # no fetch has ever been started, or once the last one finished.
+        self._cmd_fetch_thread: threading.Thread | None = None
+        # Set to True by the background fetch thread (see refresh_cmd_tags)
+        # the moment a fetch COMPLETES (whether it succeeded or failed) -
+        # consumed/reset by app.py's main loop via pop_cmd_cache_dirty() so
+        # a newly-resolved #CMD value gets rendered on the very NEXT tick,
+        # rather than sitting unused in self._cmd_cache for up to
+        # content_tick_seconds until the next already-scheduled content
+        # refresh happens to pick it up. Plain bool, read/written from both
+        # the main thread and the background fetch thread - safe without
+        # an explicit lock thanks to the GIL, same reasoning as
+        # self._cmd_cache's dict access (see refresh_cmd_tags's docstring).
+        self._cmd_cache_dirty: bool = False
 
     # -- loading ------------------------------------------------------
     def load(self) -> None:
@@ -675,7 +692,30 @@ class PresentationController:
         registry (captured once, read-only, in _prepare_document) for if/
         when the slide is later revealed again - at which point it goes
         through the exact same lazy "entered" suppress-then-eventually-
-        restore path as any other slide becoming current for real."""
+        restore path as any other slide becoming current for real.
+
+        IMPORTANT: hiding a slide via its ``Visible`` property only
+        affects future NAVIGATION (gotoNextSlide/gotoSlideIndex/etc. skip
+        a hidden slide) - it does NOT forcibly evict a slide the live
+        slideshow is ALREADY sitting on. If the slide that's currently
+        being DISPLAYED is one of the ones just hidden here (e.g. the
+        running show is sitting on a #NONCHOLONLY slide at the exact
+        moment chatzos/Motzei-Shabbos flips that slide to hidden), this
+        method does NOT itself navigate the live show away from it -
+        that's handled separately, on the very next ``poll_slide_advance``
+        tick, via ``DynamicSlideAdvancer.on_tick``'s ``force_advance``
+        parameter (see ``poll_slide_advance`` and that parameter's
+        docstring). Routing it through the SAME settle-based
+        prepare/advance state machine used for every normal timed advance
+        (rather than an immediate ad-hoc cut done right here) is what lets
+        the destination slide's own authored transition effect (e.g. a
+        fade) actually play - an earlier version of this fix called
+        `_goto_slide` directly from here with no transition-restore/settle
+        step at all, which worked (the slideshow correctly moved off the
+        hidden slide) but always cut instantly with no transition effect,
+        even when the deck author had configured one - confirmed by
+        direct user report after adding a fade transition to their deck
+        specifically to test this."""
         for index, mode in self._slide_day_mode.items():
             if not (0 <= index < len(self._slides_by_index)):
                 continue
@@ -808,18 +848,48 @@ class PresentationController:
         for clock in self.clocks:
             idx = clock.slide_index
             if idx == pending:
+                clock.reset_stabilization()
                 continue
             if 0 <= idx < len(visibility) and not visibility[idx]:
+                # Reset the hands' stabilization state (last-rendered-
+                # angle memory) every tick while hidden - see
+                # AnalogClock.reset_stabilization's docstring and the bug
+                # this fixes: a clock left hidden (e.g. its slide is
+                # #NONCHOLONLY and today is still chol) for more than a
+                # few tens of seconds would otherwise resume with a STALE
+                # last_second_angle from before the gap once its slide
+                # finally became visible again - clock_geometry.
+                # stabilize_angle has no notion of elapsed real time
+                # between calls, so it can misinterpret the large forward
+                # jump as a small BACKWARD step purely by coincidence of
+                # the second hand's own 60-second periodicity (a jump of
+                # e.g. ~30-150 real seconds can land its angle delta,
+                # modulo 360, inside stabilize_angle's jitter-suppression
+                # window) - freezing the second hand for however long it
+                # takes the live clock's own seconds to naturally "catch
+                # up" to that stale baseline again (reproduced and
+                # confirmed: exactly this symptom - second hand frozen,
+                # minute hand still moving - on a #CHOLONLY/#NONCHOLONLY
+                # flip around Friday chatzos). The minute/hour hands are
+                # far less likely to exhibit this (their own periods are
+                # 3600s/43200s respectively, much longer than a typical
+                # hidden-slide gap) but are reset here too for
+                # consistency/safety. Resetting is a no-op cost-wise (pure
+                # Python attribute writes, no UNO calls) and harmless even
+                # on ticks where no real gap-related staleness exists.
+                clock.reset_stabilization()
                 continue
             if idx == suppressed_index and loop_time is not None and loop_time < suppressed_until:
                 # This slide just became current and its own transition
                 # animation may still be playing - see
                 # _suppress_clock_for_transition/poll_slide_advance.
+                clock.reset_stabilization()
                 continue
             if not self.config.debug_repaint_update_offscreen_clocks and idx != self._last_known_slide_index:
                 # DEBUG-ONLY: reproduces an earlier version's behavior
                 # (only ever update the CURRENT slide's clock) - see
                 # LuahConfig.debug_repaint_update_offscreen_clocks.
+                clock.reset_stabilization()
                 continue
             active_clocks.append(clock)
 
@@ -883,23 +953,91 @@ class PresentationController:
             self._apply_day_mode_visibility(ctx.today_is_chol)
 
     def refresh_cmd_tags(self) -> None:
-        """Runs the configured #CMD command once for each distinct
-        args-key found in the currently-loaded deck, updating
-        self._cmd_cache in place - called on its OWN, much-less-frequent
-        tick (config.cmd_tick_seconds, default 300s) from app.py's main
-        loop, deliberately SEPARATE from refresh_content's tick (see
+        """Kicks off a BACKGROUND THREAD to run the configured #CMD command
+        once for each distinct args-key found in the currently-loaded deck,
+        updating self._cmd_cache in place - called on its OWN, much-less-
+        frequent tick (config.cmd_tick_seconds, default 300s) from app.py's
+        main loop, deliberately SEPARATE from refresh_content's tick (see
         tagging.py's module docstring and LuahConfig.cmd_tag_executable's
         PERFORMANCE NOTE for why). A no-op if no shape in the deck uses a
-        #CMD tag at all."""
+        #CMD tag at all.
+
+        Why a background thread: app.py's main loop is a single-threaded
+        while-loop that calls poll_slide_advance/refresh_clock/
+        refresh_content/refresh_cmd_tags/time.sleep(...) one after another,
+        in sequence, every tick - ANY of those calls blocking for a while
+        delays every subsequent one on that SAME tick, including the very
+        next tick's refresh_clock call (which only runs again once the
+        whole current iteration finishes and loops back around). Running
+        the actual command (tagging.refresh_cmd_cache, which calls
+        subprocess.run with up to config.cmd_tag_timeout_seconds - default
+        10s - per distinct args-key) directly/synchronously on that thread
+        was observed to visibly freeze the analog clock hands for the
+        entire duration of a slow/hanging command, since refresh_clock
+        simply never got another chance to run until the blocking call
+        returned. Moving the actual subprocess work onto a daemon thread
+        lets this method return almost immediately, so the main loop's
+        next iteration (and thus the next refresh_clock call) is never
+        delayed by it.
+
+        Thread-safety note: the background thread ONLY ever calls
+        tagging.refresh_cmd_cache (pure Python + subprocess.run - no UNO
+        calls at all) and writes into self._cmd_cache, a plain dict -
+        CPython's GIL makes individual dict item reads/writes atomic, so
+        the main thread safely reading self._cmd_cache.get(key, "") (in
+        TrackedShape.refresh, via refresh_content) concurrently with this
+        background thread writing to the SAME dict needs no additional
+        lock. The background thread never touches self.document or any
+        UNO object - only UNO-touching work (refresh_clock, refresh_content,
+        poll_slide_advance, etc.) stays on the main thread, exactly as
+        before.
+
+        If a PREVIOUS fetch is still running when this is called again
+        (e.g. a configured command is slower than cmd_tick_seconds itself,
+        or genuinely hung past its own timeout for some reason), this is a
+        no-op for that tick rather than starting an overlapping second
+        fetch - the already-running one will finish and update the cache
+        whenever it completes; the NEXT scheduled cmd_tick_seconds tick
+        will try again normally."""
         if not self._cmd_arg_keys:
             return
-        tagging.refresh_cmd_cache(
-            self._cmd_cache,
-            self.config.cmd_tag_executable,
-            self._cmd_arg_keys,
-            self.config.cmd_tag_timeout_seconds,
-            self.config.cmd_tag_global_args,
-        )
+        if self._cmd_fetch_thread is not None and self._cmd_fetch_thread.is_alive():
+            return
+        cmd_executable = self.config.cmd_tag_executable
+        arg_keys = set(self._cmd_arg_keys)
+        timeout_seconds = self.config.cmd_tag_timeout_seconds
+        global_args = self.config.cmd_tag_global_args
+
+        def _fetch() -> None:
+            tagging.refresh_cmd_cache(self._cmd_cache, cmd_executable, arg_keys, timeout_seconds, global_args)
+            # Signal app.py's main loop (via pop_cmd_cache_dirty) that a
+            # fresh value is now available, so it can force an immediate
+            # content refresh instead of waiting for the next already-
+            # scheduled content_tick_seconds interval - see that method's
+            # docstring and self._cmd_cache_dirty's field docstring above.
+            self._cmd_cache_dirty = True
+
+        self._cmd_fetch_thread = threading.Thread(target=_fetch, daemon=True)
+        self._cmd_fetch_thread.start()
+
+    def pop_cmd_cache_dirty(self) -> bool:
+        """Returns True exactly once per completed background #CMD fetch
+        (see refresh_cmd_tags) - i.e. ``self._cmd_cache_dirty``'s CURRENT
+        value - then immediately resets it back to False. Call this once
+        per tick from app.py's main loop; if it returns True, force an
+        immediate ``refresh_content()`` call (and reset the
+        ``content_tick_seconds`` schedule) so a #CMD value that just
+        finished resolving in the background reaches the display right
+        away, rather than only on the next already-scheduled content
+        refresh (which could be up to ``content_tick_seconds`` - several
+        seconds to minutes - later, even though the fetch itself might
+        only take a couple of seconds). Always consume this (call it every
+        tick, unconditionally) even when not otherwise acting on it, so a
+        stale True doesn't linger and cause a redundant extra refresh on a
+        later, unrelated tick."""
+        dirty = self._cmd_cache_dirty
+        self._cmd_cache_dirty = False
+        return dirty
 
     # -- slideshow --------------------------------------------------------
     def is_alive(self) -> bool:
@@ -1027,7 +1165,21 @@ class PresentationController:
         # this is guaranteed fresh by the time refresh_clock reads it.
         self._last_known_slide_index = current_index
 
-        action = self._advancer.on_tick(current_index, now)
+        # If a #CHOLONLY/#NONCHOLONLY/#HIDDEN day-mode flip (see
+        # _apply_day_mode_visibility, called from refresh_content on its
+        # own, less-frequent tick) just hid the slide we're CURRENTLY
+        # showing, force this slide through the advance sequence on THIS
+        # tick instead of waiting for its own authored Duration to elapse
+        # (which might never happen at all, for a manual-advance-only
+        # slide) - see DynamicSlideAdvancer.on_tick's `force_advance`
+        # parameter docstring for why this is routed through the SAME
+        # settle-based state machine as a normal timed advance (so the
+        # destination slide's own transition effect still plays) rather
+        # than an immediate ad-hoc cut.
+        visibility = self._get_slide_visibility_flags()
+        current_is_hidden = 0 <= current_index < len(visibility) and not visibility[current_index]
+
+        action = self._advancer.on_tick(current_index, now, force_advance=current_is_hidden)
         if self._debug and action != "none":
             print(f"luah_signage[debug]: poll_slide_advance current_index={current_index} action={action}")
         if action == "entered":
@@ -1058,8 +1210,38 @@ class PresentationController:
             next_index, _wrapped = _next_visible_slide_index(current_index, self._get_slide_visibility_flags())
             if self._debug:
                 print(f"luah_signage[debug]: prepare_advance next_index={next_index} wrapped={_wrapped}")
-            self._pending_transition_slide_index = next_index
-            if next_index is not None:
+            if next_index is None or next_index == current_index:
+                # Nowhere to actually advance TO - either a degenerate
+                # all-hidden deck (next_index is None), or (far more
+                # commonly) the CURRENT slide is the ONLY visible slide in
+                # the deck right now (e.g. a #CHOLONLY slide on a chol day
+                # where every OTHER slide happens to be #NONCHOLONLY or
+                # #HIDDEN) - _next_visible_slide_index's scan-forward-and-
+                # wrap logic then has no choice but to land back on the
+                # slide it started from. Proceeding with the normal
+                # advance sequence in this case would restore+immediately
+                # re-suppress this slide's OWN transition for no visual
+                # benefit (gotoSlideIndex-ing a slide onto ITSELF) and,
+                # worse, call _suppress_clock_for_transition for this same
+                # slide_index - pausing the clock actually being displayed
+                # for the (pointless) "transition" duration, which is
+                # exactly the reported symptom ("advance timer hits,
+                # doesn't go anywhere, but the clock freezes for a few
+                # seconds"). Abort the whole attempt instead:
+                # cancel_prepared_advance resets the advancer's internal
+                # timing as if this slide had just been freshly
+                # (re-)entered, so a LATER genuine advance can still be
+                # retried normally (e.g. once a day-mode flip elsewhere in
+                # the deck makes a real destination slide visible again)
+                # after another full duration_seconds elapses, rather than
+                # either retrying every single tick forever or never
+                # retrying again at all.
+                self._pending_transition_slide_index = None
+                self._advancer.cancel_prepared_advance(now)
+                if self._debug:
+                    print("luah_signage[debug]: prepare_advance aborted (nowhere to advance to)")
+            else:
+                self._pending_transition_slide_index = next_index
                 next_slide = self._slides_by_index[next_index]
                 _restore_slide_transition(next_slide, self._advancer.get_transition_props(next_index))
         elif action == "advance":

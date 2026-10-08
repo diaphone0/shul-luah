@@ -580,6 +580,48 @@ def test_refresh_cmd_cache_timeout_stores_error_placeholder():
     assert "timed out" in cache[""]
 
 
+def test_refresh_cmd_cache_keeps_previous_good_value_on_failure():
+    # A key that previously resolved successfully must NOT be overwritten
+    # with an error placeholder if the NEXT run fails - the display
+    # should keep showing the last known-good value instead.
+    cache: dict[str, str] = {"foo": "previously resolved value"}
+    tagging.refresh_cmd_cache(cache, "definitely_not_a_real_executable_xyz", {"foo"})
+    assert cache["foo"] == "previously resolved value"
+
+
+def test_refresh_cmd_cache_stores_error_if_no_previous_good_value_exists():
+    # A key with NO previous value at all still gets the error placeholder
+    # stored (so a persistently-broken config remains visibly diagnosable).
+    cache: dict[str, str] = {}
+    tagging.refresh_cmd_cache(cache, "definitely_not_a_real_executable_xyz", {"foo"})
+    assert tagging._is_cmd_error_placeholder(cache["foo"])
+
+
+def test_refresh_cmd_cache_overwrites_a_previous_error_with_a_new_error():
+    # A key whose PREVIOUS value was ALREADY an error placeholder (not a
+    # genuine prior success) should still get overwritten by a new error -
+    # only a previously-GOOD value is protected from being overwritten.
+    cache: dict[str, str] = {"foo": "[#CMD: exit code 1]"}
+    tagging.refresh_cmd_cache(cache, "definitely_not_a_real_executable_xyz", {"foo"})
+    assert cache["foo"] != "[#CMD: exit code 1]"
+    assert tagging._is_cmd_error_placeholder(cache["foo"])
+
+
+def test_refresh_cmd_cache_overwrites_previous_good_value_on_success():
+    import sys
+
+    cmd = f'"{sys.executable}" -c "print(\'fresh value\')"'
+    cache: dict[str, str] = {"": "stale old value"}
+    tagging.refresh_cmd_cache(cache, cmd, {""})
+    assert cache[""] == "fresh value"
+
+
+def test_is_cmd_error_placeholder():
+    assert tagging._is_cmd_error_placeholder("[#CMD: timed out after 10s]")
+    assert not tagging._is_cmd_error_placeholder("regular output")
+    assert not tagging._is_cmd_error_placeholder("")
+
+
 if __name__ == "__main__":
     import sys
     import traceback

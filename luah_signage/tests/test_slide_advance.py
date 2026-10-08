@@ -112,6 +112,98 @@ def test_reset_clears_all_state():
     assert adv.on_tick(0, now=200.0) == "none"
 
 
+def test_force_advance_triggers_prepare_advance_immediately():
+    # Even though duration_seconds=100 (far from elapsed), force_advance=True
+    # must still trigger "prepare_advance" right away - mirrors a
+    # #CHOLONLY/#NONCHOLONLY day-mode flip hiding the currently-shown slide.
+    adv = DynamicSlideAdvancer(transition_settle_seconds=1.0)
+    adv.register(0, duration_seconds=100.0, transition_props={})
+    assert adv.on_tick(0, now=100.0) == "entered"
+    assert adv.on_tick(0, now=100.5, force_advance=True) == "prepare_advance"
+    assert adv.on_tick(0, now=100.9, force_advance=True) == "none"
+    assert adv.on_tick(0, now=101.5, force_advance=True) == "advance"
+
+
+def test_force_advance_overrides_manual_advance_only_slide():
+    # A slide authored as "advance on click only" (duration_seconds=0)
+    # would normally NEVER auto-advance - force_advance must override this
+    # too, since a hidden slide must not get stuck forever.
+    adv = DynamicSlideAdvancer(transition_settle_seconds=1.0)
+    adv.register(0, duration_seconds=0.0, transition_props={})
+    assert adv.on_tick(0, now=100.0) == "entered"
+    assert adv.on_tick(0, now=200.0) == "none"  # confirm it would NOT advance on its own
+    assert adv.on_tick(0, now=300.0, force_advance=True) == "prepare_advance"
+    assert adv.on_tick(0, now=301.0, force_advance=True) == "advance"
+
+
+def test_force_advance_does_not_restart_an_already_settling_sequence():
+    # Once "prepare_advance" has fired (whether triggered naturally or by
+    # force_advance), subsequent force_advance=True ticks while still
+    # settling must not re-trigger "prepare_advance" again.
+    adv = DynamicSlideAdvancer(transition_settle_seconds=2.0)
+    adv.register(0, duration_seconds=100.0, transition_props={})
+    assert adv.on_tick(0, now=100.0) == "entered"
+    assert adv.on_tick(0, now=101.0, force_advance=True) == "prepare_advance"
+    assert adv.on_tick(0, now=101.5, force_advance=True) == "none"
+    assert adv.on_tick(0, now=102.5, force_advance=True) == "none"
+    assert adv.on_tick(0, now=103.0, force_advance=True) == "advance"
+
+
+def test_force_advance_false_behaves_exactly_like_default():
+    adv = DynamicSlideAdvancer()
+    adv.register(0, duration_seconds=10.0, transition_props={})
+    assert adv.on_tick(0, now=100.0, force_advance=False) == "entered"
+    assert adv.on_tick(0, now=105.0, force_advance=False) == "none"
+
+
+def test_cancel_prepared_advance_stops_advance_from_firing_again():
+    # Mirrors presentation.py's handling when there's nowhere to actually
+    # advance to (e.g. the current slide is the ONLY visible slide in the
+    # deck) - after cancel_prepared_advance, on_tick must NOT immediately
+    # return "advance" on the next tick (it would, forever, if the caller
+    # had done nothing).
+    adv = DynamicSlideAdvancer(transition_settle_seconds=1.0)
+    adv.register(0, duration_seconds=10.0, transition_props={})
+    assert adv.on_tick(0, now=100.0) == "entered"
+    assert adv.on_tick(0, now=110.0) == "prepare_advance"
+    adv.cancel_prepared_advance(now=110.0)
+    # Must NOT fire "advance" even after the settle period would have
+    # elapsed - the attempt was cancelled. (The duration timer DOES
+    # restart from the cancellation point - see the next test - so this
+    # only checks shortly after cancelling, before a full new
+    # duration_seconds has elapsed again.)
+    assert adv.on_tick(0, now=111.5) == "none"
+    assert adv.on_tick(0, now=115.0) == "none"
+
+
+def test_cancel_prepared_advance_restarts_the_duration_timer():
+    # After cancelling, the slide's own duration-elapsed timer must
+    # restart from the cancellation point - so a genuine future advance
+    # attempt (e.g. once a day-mode flip makes a real destination slide
+    # visible) is retried after another FULL duration_seconds, not
+    # instantly and not never.
+    adv = DynamicSlideAdvancer(transition_settle_seconds=1.0)
+    adv.register(0, duration_seconds=10.0, transition_props={})
+    assert adv.on_tick(0, now=100.0) == "entered"
+    assert adv.on_tick(0, now=110.0) == "prepare_advance"
+    adv.cancel_prepared_advance(now=110.0)
+    assert adv.on_tick(0, now=115.0) == "none"  # only 5s since cancellation - not yet
+    assert adv.on_tick(0, now=119.9) == "none"
+    assert adv.on_tick(0, now=120.0) == "prepare_advance"  # a full 10s after cancellation
+
+
+def test_cancel_prepared_advance_is_a_noop_if_called_without_a_pending_prepare():
+    adv = DynamicSlideAdvancer(transition_settle_seconds=1.0)
+    adv.register(0, duration_seconds=10.0, transition_props={})
+    assert adv.on_tick(0, now=100.0) == "entered"
+    adv.cancel_prepared_advance(now=105.0)
+    # Timer restarts from the cancel call regardless - same as above, just
+    # confirming this doesn't raise/misbehave when called speculatively
+    # with no actual pending "prepare_advance" in progress.
+    assert adv.on_tick(0, now=114.9) == "none"
+    assert adv.on_tick(0, now=115.0) == "prepare_advance"
+
+
 if __name__ == "__main__":
     import sys
     import traceback

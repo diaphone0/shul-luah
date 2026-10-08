@@ -175,6 +175,19 @@ class AnalogClock:
     last_minute_angle: float | None = None
     last_second_angle: float | None = None
 
+    def reset_stabilization(self) -> None:
+        """Clears all 3 hands' last-rendered-angle state back to ``None``
+        - see presentation.py's ``refresh_clock`` for why/when this is
+        called (any tick where this clock is SKIPPED - e.g. its slide is
+        currently hidden - rather than actually updated). ``None`` makes
+        ``clock_geometry.stabilize_angle`` accept the next raw computed
+        angle unconditionally (same as a hand's very first-ever render),
+        bypassing its backward-jitter suppression for exactly one
+        subsequent update."""
+        self.last_hour_angle = None
+        self.last_minute_angle = None
+        self.last_second_angle = None
+
 
 def _make_point(x: float, y: float):
     import uno

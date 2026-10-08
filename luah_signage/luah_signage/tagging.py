@@ -330,6 +330,16 @@ def find_cmd_arg_keys(templates: Iterable[str]) -> set[str]:
     return keys
 
 
+def _is_cmd_error_placeholder(value: str) -> bool:
+    """True if ``value`` is one of ``_run_cmd_tag``'s own error-placeholder
+    strings (e.g. ``"[#CMD: timed out after 10s]"``) rather than genuine
+    command output - all of them share this same ``"[#CMD: "`` prefix (see
+    every ``return`` in ``_run_cmd_tag``). Used by ``refresh_cmd_cache`` to
+    decide whether a failed run should overwrite a previously-cached GOOD
+    value or not."""
+    return value.startswith("[#CMD: ")
+
+
 def refresh_cmd_cache(
     cache: dict[str, str],
     cmd_executable: str | None,
@@ -344,9 +354,29 @@ def refresh_cmd_cache(
     ``global_args`` (a JSON list of literal argv entries, or a shell-like
     string - see ``_normalize_global_args``) is applied identically to
     every key. Meant to be called on its own, infrequent tick (see module
-    docstring) - NOT from the main per-tick content refresh."""
+    docstring) - NOT from the main per-tick content refresh.
+
+    If a run FAILS (returns one of ``_run_cmd_tag``'s own error-placeholder
+    strings - see ``_is_cmd_error_placeholder``) AND ``cache`` already has
+    a previously-cached GOOD (non-error) value for that same key, the OLD
+    value is kept as-is rather than being overwritten with the new error
+    placeholder - a transient failure (e.g. the target server being
+    briefly unreachable, a one-off timeout) then just means the display
+    keeps showing the last successfully-fetched data until the NEXT
+    successful run, instead of replacing valid-looking content with a
+    visible ``"[#CMD: ...]"`` error message. A key that has NEVER
+    succeeded yet (not in ``cache``, or itself already holding an error
+    placeholder from a previous failed attempt) still gets the new error
+    placeholder stored as before, so a persistently-broken configuration
+    remains visibly diagnosable on the display rather than silently
+    staying blank forever."""
     for key in arg_keys:
-        cache[key] = _run_cmd_tag(cmd_executable, key, timeout_seconds, global_args)
+        result = _run_cmd_tag(cmd_executable, key, timeout_seconds, global_args)
+        if _is_cmd_error_placeholder(result):
+            previous = cache.get(key)
+            if previous is not None and not _is_cmd_error_placeholder(previous):
+                continue  # keep the last known-good value instead of overwriting it
+        cache[key] = result
 
 
 def _fmt_time(hd, offset_minutes: int = 0, minute_ceil: bool = False) -> str:
@@ -475,7 +505,7 @@ def _tag_dayinfo(ctx: ZmanContext, offset_minutes: int) -> str:
     # -- Sefirat HaOmer --
     omer = get_omer(hd)
     if omer:
-        lines.append(f"({omer} בעומר)")
+        lines.append(f"{omer} בעומר")
 
     # -- Rosh Chodesh --
     if get_rosh_chodesh(hd) == YomTov.ROSH_CHODESH:

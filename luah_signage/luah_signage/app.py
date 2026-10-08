@@ -77,13 +77,17 @@ def _connect_and_load(config: LuahConfig, time_source: TimeSource) -> Presentati
     # every other per-tick setting in this module.
     if not controller.config.debug_skip_slideshow:
         controller.start_slideshow()
-    # Populate the #CMD cache once, right away - WITHOUT this, any #CMD tag
-    # would render as an empty string for the entire first content_tick_
-    # seconds interval (the main loop's cmd-refresh tick also fires on its
-    # own first iteration - see run()'s last_cmd_refresh=0.0 - but that
-    # happens AFTER refresh_content already ran blank on that same first
-    # tick, so the resolved value wouldn't actually reach the display
-    # until the SECOND content refresh without this upfront call).
+    # Kick off the #CMD cache's first fetch immediately (runs on a
+    # background thread - see PresentationController.refresh_cmd_tags's
+    # docstring for why - so this call returns right away without
+    # blocking the rest of startup). A #CMD tag may still render blank for
+    # the very first content refresh if the configured command hasn't
+    # finished yet by then, but run()'s main loop picks up the result on
+    # the very next tick after the fetch completes (via
+    # pop_cmd_cache_dirty() forcing an immediate refresh_content() call,
+    # rather than waiting for the next already-scheduled
+    # content_tick_seconds interval) - so this is still effectively
+    # near-instant in practice, just no longer a hard guarantee.
     controller.refresh_cmd_tags()
     return controller
 
@@ -167,7 +171,23 @@ def run(config: LuahConfig) -> None:
                 # `config` here would silently ignore that override for the
                 # whole tick-scheduling loop even though the controller
                 # itself picked it up correctly.
-                if loop_time - last_content_refresh >= controller.config.content_tick_seconds:
+                #
+                # cmd_cache_updated: a background #CMD fetch (see
+                # PresentationController.refresh_cmd_tags - runs off the
+                # main thread so a slow/hanging command never blocks this
+                # loop/freezes the clock) may have just finished and
+                # populated self._cmd_cache with a fresh value. Always call
+                # pop_cmd_cache_dirty() every tick (even on ticks where it's
+                # not otherwise needed) so a stale True never lingers and
+                # causes a redundant refresh later - see that method's
+                # docstring. Without this, a newly-resolved #CMD value
+                # would otherwise sit unused until the NEXT already-
+                # scheduled content_tick_seconds refresh (up to 30s by
+                # default), even though the fetch itself might only take a
+                # couple of seconds - reintroducing a different regression
+                # from the one the background-thread change itself fixed.
+                cmd_cache_updated = controller.pop_cmd_cache_dirty()
+                if loop_time - last_content_refresh >= controller.config.content_tick_seconds or cmd_cache_updated:
                     controller.refresh_content(now)
                     last_content_refresh = loop_time
 
