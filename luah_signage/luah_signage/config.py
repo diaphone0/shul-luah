@@ -340,10 +340,52 @@ def _strip_comment_keys(data: dict) -> dict:
     return {key: value for key, value in data.items() if not key.startswith("_")}
 
 
+# PowerPoint's/Impress's AutoCorrect "smart quotes" feature substitutes a
+# typed straight ASCII quote with its curly/typographic equivalent while
+# typing directly into a textbox - completely invisible to the deck
+# author, but fatal to JSON parsing (which requires literal ASCII `"` to
+# delimit strings/keys). Mapped back to their plain ASCII equivalents by
+# _normalize_smart_quotes before every #CONFIG JSON parse attempt.
+_SMART_QUOTE_TRANSLATION = str.maketrans(
+    {
+        "\u201c": '"',  # “ LEFT DOUBLE QUOTATION MARK
+        "\u201d": '"',  # ” RIGHT DOUBLE QUOTATION MARK
+        "\u201e": '"',  # „ DOUBLE LOW-9 QUOTATION MARK
+        "\u2018": "'",  # ‘ LEFT SINGLE QUOTATION MARK
+        "\u2019": "'",  # ’ RIGHT SINGLE QUOTATION MARK
+        "\u201a": "'",  # ‚ SINGLE LOW-9 QUOTATION MARK
+    }
+)
+
+
+def _normalize_smart_quotes(text: str) -> str:
+    """Replaces typographic/"smart" quote characters with their plain
+    ASCII straight-quote equivalents - see ``_SMART_QUOTE_TRANSLATION``
+    and ``parse_config_override``'s docstring for why this is needed."""
+    return text.translate(_SMART_QUOTE_TRANSLATION)
+
+
 def parse_config_override(json_text: str) -> dict:
     """Parses a ``#CONFIG:{...}`` tag's JSON payload (see tagging.py's
     ``find_first_config_json``) into a plain dict of override keys/
     values, for use with ``apply_config_overrides`` below.
+
+    Normalizes "smart"/typographic quote characters (left/right double
+    quotation marks U+201C/U+201D, left/right single quotation marks
+    U+2018/U+2019) back to plain ASCII straight quotes BEFORE parsing -
+    see ``_normalize_smart_quotes``. This matters because PowerPoint's
+    (and Impress's) AutoCorrect/AutoFormat "smart quotes" feature
+    silently substitutes a typed straight `"`/`'` with its curly
+    equivalent while a deck author is typing directly into a textbox -
+    completely invisible unless you know to look for it, and it breaks
+    JSON parsing outright (`json.loads` requires literal ASCII `"` to
+    delimit strings/keys) - confirmed to be the actual root cause of a
+    real `#CONFIG` tag silently failing to parse at all in this project's
+    own test deck (the `"_debug_repaint_lock_controllers"` key, typed
+    directly in PowerPoint, had its opening quote auto-corrected to
+    U+201C - every single override in that JSON object failed as a
+    result, not just that one field, since a JSONDecodeError on malformed
+    JSON causes `apply_config_overrides` to never even be called at all).
 
     Any top-level key starting with ``_`` (e.g. ``"_comment": "..."``) is
     silently dropped - see ``_strip_comment_keys`` - letting a deck
@@ -356,7 +398,7 @@ def parse_config_override(json_text: str) -> dict:
     #CONFIG marker shape is always hidden and has no visible text of its
     own to show an inline error in, unlike #CMD - presentation.py reports
     failures via a console print instead)."""
-    data = json.loads(json_text)
+    data = json.loads(_normalize_smart_quotes(json_text))
     if not isinstance(data, dict):
         raise ValueError(f"#CONFIG JSON must be an object, got {type(data).__name__}")
     return _strip_comment_keys(data)

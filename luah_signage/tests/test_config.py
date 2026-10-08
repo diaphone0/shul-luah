@@ -166,6 +166,41 @@ def test_parse_config_override_strips_underscore_prefixed_comment_keys():
     assert result == {"cmd_tick_seconds": 60}
 
 
+def test_parse_config_override_normalizes_smart_double_quotes():
+    # PowerPoint/Impress AutoCorrect silently substitutes a typed straight
+    # quote with its curly equivalent while typing directly into a
+    # textbox - must still parse correctly. Uses \u201c/\u201d (left/right
+    # double quotation marks), the exact characters confirmed to appear
+    # in a real deck's #CONFIG tag during manual testing.
+    smart = "\u201ccmd_tick_seconds\u201d: 60".join(["{", "}"])
+    result = config_module.parse_config_override(smart)
+    assert result == {"cmd_tick_seconds": 60}
+
+
+def test_parse_config_override_normalizes_mixed_smart_and_straight_quotes():
+    # Reproduces the EXACT real-world failure first encountered in this
+    # project: a JSON object where only SOME keys got auto-corrected
+    # (typically because they were typed/edited at different times) -
+    # must still parse correctly as a whole, not just when every quote
+    # happens to be consistently smart or consistently straight.
+    mixed = (
+        '{\n"clock_tick_seconds": 1.0,\n"_mock_start_datetime": "2026-03-28T14:30:00",\n'
+        '\u201c_debug_repaint_lock_controllers": false,\n\u201c_debug_skip_slideshow": true,\n'
+        '"clock_style":{"hour_color": 0}\n}'
+    )
+    result = config_module.parse_config_override(mixed)
+    assert result == {"clock_tick_seconds": 1.0, "clock_style": {"hour_color": 0}}
+
+
+def test_parse_config_override_normalizes_smart_single_quotes():
+    smart = "\u2018value with smart single quotes\u2019"
+    # Single quotes aren't JSON string delimiters, but must still be
+    # normalized if they appear WITHIN a double-quoted string value,
+    # without corrupting the value's actual content.
+    result = config_module.parse_config_override(f'{{"a_comment_like_value": "{smart}"}}')
+    assert result == {"a_comment_like_value": "'value with smart single quotes'"}
+
+
 def _base_config(tmp: Path):
     path = _write_config(Path(tmp))
     return load_config(path)
@@ -205,6 +240,31 @@ def test_apply_config_overrides_nested_location_partial_merge():
         assert updated.location.elevation == 999
         assert updated.location.latitude == base.location.latitude
         assert updated.location.longitude == base.location.longitude
+
+
+def test_apply_config_overrides_mock_start_datetime_can_be_set():
+    with tempfile.TemporaryDirectory() as tmp:
+        base = _base_config(tmp)
+        updated = config_module.apply_config_overrides(base, {"mock_start_datetime": "2026-09-25T14:30:00"})
+        assert updated.mock_start_datetime == "2026-09-25T14:30:00"
+
+
+def test_apply_config_overrides_mock_start_datetime_can_be_cleared_with_null():
+    # A deck author's #CONFIG tag using a JSON `null` for this key (parsed
+    # as Python None) must be able to CLEAR a previously-active mock time
+    # back to real time - confirms `None` is a genuine, distinguishable
+    # override value here, not accidentally treated the same as "key not
+    # present at all" (which would leave the base config's own value
+    # untouched instead of actually clearing it).
+    with tempfile.TemporaryDirectory() as tmp:
+        base = _write_config(Path(tmp))
+        base_config = load_config(base)
+        with_mock = config_module.apply_config_overrides(
+            base_config, {"mock_start_datetime": "2026-09-25T14:30:00"}
+        )
+        assert with_mock.mock_start_datetime == "2026-09-25T14:30:00"
+        cleared = config_module.apply_config_overrides(with_mock, {"mock_start_datetime": None})
+        assert cleared.mock_start_datetime is None
 
 
 def test_apply_config_overrides_multiple_keys_at_once():
