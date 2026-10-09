@@ -62,17 +62,19 @@ from datetime import timedelta
 from typing import Callable, Iterable, Protocol
 
 from pyzmanim import dafyomi, hdateformat, shiur, zmanim
-from pyzmanim.hdateformat import num_to_h_month
+from pyzmanim.hdateformat import molad_format, num_to_h_month
 from pyzmanim.hebrewcalendar import (
     HDate,
     YomTov,
     Parshah,
+    get_molad,
     get_omer,
     get_parshah,
     get_rosh_chodesh,
     get_special_shabbos,
     get_yom_tov,
     hdate_add_day,
+    hdate_add_month,
     hdate_gregorian,
     is_assur_be_melachah,
     is_candle_lighting,
@@ -518,14 +520,36 @@ def _tag_dayinfo(ctx: ZmanContext, offset_minutes: int) -> str:
     return " - ".join(lines)
 
 
+def _tag_molad(ctx: ZmanContext, offset_minutes: int) -> str:
+    """Returns the molad (new moon) announcement for the UPCOMING Hebrew
+    month - i.e. the next Rosh Chodesh after ``ctx.now`` - NOT the
+    current month's own (already-passed) molad. Unlike a monthly
+    calendar-view tool (see ``print_hebrew_month.py``'s ``print_molad``/
+    the original VBA's ``calendar_utils_get_month_molad_info`` in
+    ``reference/vbzmanim/util/calendar_utils.bas``, which this tag was
+    originally modeled on and shows BOTH the current and, conditionally,
+    the next month's molad for a whole-month display), a live daily
+    signage display only ever cares about what's still ahead - the
+    current month's molad is stale/irrelevant information by the time
+    today is any day other than the 1st."""
+    hd_next_month = HDate(**ctx.now.__dict__)
+    hdate_add_month(hd_next_month, 1)
+    molad = get_molad(hd_next_month.year, hd_next_month.month)
+    month_name = num_to_h_month(hd_next_month.month, hd_next_month.leap)
+    return f"מולד חודש {month_name}:\n{molad_format(molad)}"
+
+
+
 # tag name -> callable(ctx, offset_minutes) -> rendered string
 TAG_REGISTRY: dict[str, Callable[[ZmanContext, int], str]] = {
     "HEBDATE": lambda ctx, off: hdateformat.hdate_or_format(ctx.now, ctx.location),
+    "MOLAD": _tag_molad,
     "DAYZMANIM": _tag_dayzmanim,
     "FULLZMANIM": _tag_fullzmanim,
     "DAFYOMI": _tag_dafyomi,
     "DAYINFO": _tag_dayinfo,
     "PARSHA": _tag_parsha,
+    "MOLAD": _tag_molad,
     "SHABBOS": lambda ctx, off: _fmt_time(zmanim.getelevationsunset(ctx.erev_shabbos, ctx.location), off),
     "MOZASH": lambda ctx, off: _fmt_time(zmanim.gettzais8p5(ctx.shabbos, ctx.location), off),
     "MOZASHTITLE": _tag_mozashtitle,

@@ -379,6 +379,62 @@ def test_dafyomi_tag_matches_known_start_date():
     assert "ברכות" in text
 
 
+def test_molad_tag_is_registered_and_known():
+    assert "MOLAD" in tagging.TAG_REGISTRY
+    assert tagging.contains_known_tag("#MOLAD")
+
+
+def test_molad_tag_shows_upcoming_month_not_current_month():
+    from pyzmanim.hebrewcalendar import HDate, get_molad, hdate_add_month
+    from pyzmanim.hdateformat import molad_format, num_to_h_month
+
+    # Mid-month, ordinary day: the UPCOMING chodesh is next Hebrew month,
+    # not the current one - the signage display only ever cares about
+    # what's still ahead, unlike a monthly calendar-view tool.
+    ctx = _ctx(datetime(2024, 1, 15, 12, 0, 0))  # 5 Shevat 5784
+    text = tagging.render_template("#MOLAD", ctx)
+
+    hd = ctx.now
+    current_name = num_to_h_month(hd.month, hd.leap)
+    hd_next = HDate(**hd.__dict__)
+    hdate_add_month(hd_next, 1)
+    expected_name = num_to_h_month(hd_next.month, hd_next.leap)
+    expected_molad = molad_format(get_molad(hd_next.year, hd_next.month))
+    # The "מולד חודש <name>:" HEADING itself must name the UPCOMING
+    # month, never the current one (note: the current month's name MAY
+    # still legitimately appear elsewhere in the text, e.g. inside the
+    # molad's own date-of-occurrence string - molad_format's reported day
+    # the molad occurs on is itself usually still within the CURRENT
+    # Hebrew month, e.g. "ל שבט" for a molad occurring on 30 Shevat even
+    # though it's heralding the month of Adar - so only the heading
+    # itself is checked here, not the text as a whole).
+    assert f"מולד חודש {current_name}" not in text
+    assert f"מולד חודש {expected_name}" in text
+    assert expected_molad in text
+    # Exactly ONE molad reported, ever - never the current month's too.
+    assert text.count("מולד חודש") == 1
+
+
+def test_molad_tag_still_shows_only_upcoming_month_near_month_end():
+    # Near the end of a month (the scenario that used to ALSO show the
+    # current month's molad, before this tag was simplified to only ever
+    # report the upcoming one) - must still report only ONE molad, for
+    # the month AFTER the current one.
+    from pyzmanim.hebrewcalendar import HDate, get_molad, hdate_add_month
+    from pyzmanim.hdateformat import molad_format, num_to_h_month
+
+    ctx = _ctx(datetime(2026, 10, 9, 12, 0, 0))  # 28 Tishrei 5787 (near month-end)
+    text = tagging.render_template("#MOLAD", ctx)
+
+    hd_next = HDate(**ctx.now.__dict__)
+    hdate_add_month(hd_next, 1)
+    expected_name = num_to_h_month(hd_next.month, hd_next.leap)
+    expected_molad = molad_format(get_molad(hd_next.year, hd_next.month))
+    assert text.count("מולד חודש") == 1
+    assert f"מולד חודש {expected_name}" in text
+    assert expected_molad in text
+
+
 def test_cmd_tag_pattern_captures_args():
     matches = list(tagging.TAG_PATTERN.finditer('#CMD:<-city "Beit Shemesh" -format json>'))
     assert len(matches) == 1
