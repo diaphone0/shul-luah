@@ -101,12 +101,27 @@ def num_to_h_char(innum: int) -> str:
     return result
 
 
-def num_to_wday(date_in: HDate, shabbos: bool) -> str:
+def num_to_wday(date_in: HDate, shabbos: bool = True) -> str:
     """Convert int-based Hebrew weekday (hdate.wday) to char representation.
     `shabbos=True` uses שבת instead of שביעי for the 7th day."""
     if shabbos and date_in.wday == 0:
         return HWDAY[7]
     return HWDAY[date_in.wday]
+
+
+def num_to_wday_short(date_in: HDate) -> str:
+    """Short, single-Hebrew-letter weekday representation: א/ב/ג/ד/ה/ו for
+    Sunday-Friday (hdate.wday 1-6), ש for Shabbos (hdate.wday 0) - the
+    common shorthand used for things like Rosh Chodesh day-of-week
+    announcements (e.g. "בימים א וב" for a two-day Rosh Chodesh falling on
+    Sunday and Monday). Not part of the original VBA port (no equivalent
+    existed in mod_hdateformat.bas) - reuses HCHAR's existing Hebrew-letter
+    gematria characters (HCHAR[1..6] already are א..ו) rather than adding a
+    new data table, since Sunday-Friday's single-letter form is identical
+    to the first six gematria letters."""
+    if date_in.wday == 0:
+        return "ש"
+    return HCHAR[date_in.wday]
 
 
 def num_to_h_month(month: int, leap: int) -> str:
@@ -170,7 +185,7 @@ def molad_format(molad: HDate, full_date: bool = True) -> str:
             f"יום {num_to_wday(molad, True)}, {num_to_h_char(molad.day)} "
             f"{num_to_h_month(molad.month, molad.leap)}, שעה {time_str} ו-{molad.sec} חלקים"
         )
-    return f"יום {num_to_wday(molad, True)} שעה {time_str} ו-{molad.sec} חלקים"
+    return f"יום {num_to_wday(molad, True)}, שעה {time_str} ו-{molad.sec} חלקים"
 
 
 def yom_tov_format(current: YomTov) -> str:

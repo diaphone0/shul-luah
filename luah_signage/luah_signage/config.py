@@ -312,6 +312,27 @@ class LuahConfig:
     # and defaults to a much longer interval (5 minutes). Has no effect
     # at all if no shape in the deck uses a #CMD tag.
     cmd_tick_seconds: float = 300.0
+    # When True (the default), the app periodically exports the CURRENTLY
+    # LOADED presentation (with all its live-rendered tag values, analog
+    # clock shapes, and day-mode visibility, exactly as displayed) to two
+    # PDFs - see presentation_pdf.py for the full design. Each export
+    # produces one PDF per day-mode:
+    #   - luah_weekday.pdf : slides tagged #CHOLONLY plus every always-
+    #     visible slide
+    #   - luah_shabbos.pdf : slides tagged #NONCHOLONLY plus every always-
+    #     visible slide
+    # Slides tagged #HIDDEN (or #CONFIG, which is auto-hidden) are never
+    # included in either PDF. The export is triggered after launch/reload
+    # (the first completed round of updates), whenever a non-clock tag's
+    # rendered value changes, and when the day-mode slideshow switches
+    # from non-chol-only to chol-only. Files are written to export_pdf_dir
+    # (overwriting any previous copies). Set to False to disable.
+    export_pdf: bool = True
+    # Directory (a path string, forward-slash friendly like pptx_path)
+    # where luah_weekday.pdf / luah_shabbos.pdf are written. Defaults to
+    # the same directory as config.json (the repo root). Created if it
+    # doesn't already exist.
+    export_pdf_dir: str | None = None
 
 
 def _resolve_pptx_path(raw: str | None) -> Path:
@@ -380,6 +401,8 @@ def load_config(path: Path | None = None) -> LuahConfig:
         cmd_tag_timeout_seconds=data.get("cmd_tag_timeout_seconds", 10.0),
         cmd_tag_global_args=data.get("cmd_tag_global_args", []),
         cmd_tick_seconds=data.get("cmd_tick_seconds", 300.0),
+        export_pdf=data.get("export_pdf", True),
+        export_pdf_dir=data.get("export_pdf_dir"),
     )
 
 

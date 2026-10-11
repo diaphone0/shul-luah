@@ -249,6 +249,35 @@ def test_tracked_shape_refresh_only_touches_tag_span_not_static_text():
     assert end == len("Label: #SUNRISE")
 
 
+def test_tracked_shape_refresh_reports_changed_tag_names():
+    # refresh returns the set of tag NAMES whose value actually changed -
+    # used by PresentationController.refresh_content to decide on PDF
+    # exports. A tag whose value is unchanged must NOT appear in the set.
+    ctx_summer = _ctx(datetime(2024, 6, 21, 12, 0, 0))
+    ctx_winter = _ctx(datetime(2024, 12, 21, 12, 0, 0))
+    shape = FakeShape("#SUNRISE")
+    tracked = tagging.TrackedShape(shape=shape, template="#SUNRISE")
+    # First refresh: raw "#SUNRISE" -> rendered => changed.
+    assert tracked.refresh(ctx_summer) == {"SUNRISE"}
+    # Same ctx again: no change.
+    assert tracked.refresh(ctx_summer) == set()
+    # Different ctx: the value changed again => reported.
+    assert tracked.refresh(ctx_winter) == {"SUNRISE"}
+
+
+def test_tracked_shape_refresh_reports_empty_when_no_tags_changed():
+    shape = FakeShape("no tags here #SUNRISE")
+    tracked = tagging.TrackedShape(shape=shape, template="no tags here #SUNRISE")
+    assert tracked.refresh(_ctx(datetime(2024, 6, 21, 12, 0, 0))) == {"SUNRISE"}
+    assert tracked.refresh(_ctx(datetime(2024, 6, 21, 12, 0, 0))) == set()
+
+
+def test_is_clock_text_tag_true_only_for_dicl_clock():
+    assert tagging.is_clock_text_tag("DICLOCK") is True
+    assert tagging.is_clock_text_tag("SUNSET") is False
+    assert tagging.is_clock_text_tag("CMD") is False
+
+
 def test_tracked_shape_refresh_does_not_rewrite_unchanged_tag_value():
     # Calling refresh twice with the SAME effective ctx must not issue a
     # second set_text_range call for a tag whose rendered value didn't
@@ -384,55 +413,99 @@ def test_molad_tag_is_registered_and_known():
     assert tagging.contains_known_tag("#MOLAD")
 
 
-def test_molad_tag_shows_upcoming_month_not_current_month():
-    from pyzmanim.hebrewcalendar import HDate, get_molad, hdate_add_month
-    from pyzmanim.hdateformat import molad_format, num_to_h_month
+def test_molad_tag_two_day_rosh_chodesh_matches_known_real_world_example():
+    # 28 Tishrei 5787 (2026-10-09) - Tishrei always has 30 days, so the
+    # upcoming Rosh Chodesh (Cheshvan) is a two-day one: 30 Tishrei
+    # (Sunday) and 1 Cheshvan (Monday) - a known-good real-world example
+    # independently verified against get_molad/molad_format output.
+    ctx = _ctx(datetime(2026, 10, 9, 12, 0, 0))
+    text = tagging.render_template("#MOLAD", ctx)
+    assert text == (
+        "ראש חודש חשון\n"
+        "בימים ראשון ושני\n"
+        "המולד ביום ראשון, שעה 09:43 ו-2 חלקים"
+    )
 
-    # Mid-month, ordinary day: the UPCOMING chodesh is next Hebrew month,
-    # not the current one - the signage display only ever cares about
-    # what's still ahead, unlike a monthly calendar-view tool.
+
+def test_molad_tag_single_day_rosh_chodesh_has_no_second_day():
+    from pyzmanim.hebrewcalendar import HDate, convert_date, hdate_add_day, hdate_gregorian, last_day_of_hebrew_month
+
+    # Find a Hebrew month with exactly 29 days (a one-day Rosh Chodesh for
+    # the FOLLOWING month) that isn't Elul (so the month after isn't
+    # Tishrei/Rosh Hashana, which is handled - and tested - separately).
+    hd = convert_date(datetime(2024, 1, 1, 12, 0, 0))
+    for _ in range(600):
+        if last_day_of_hebrew_month(hd.month, hd.year) == 29 and hd.month != 6:
+            break
+        hdate_add_day(hd, 1)
+    else:
+        raise AssertionError("could not find a qualifying 29-day month within range")
+
+    ctx = _ctx(hdate_gregorian(hd))
+    text = tagging.render_template("#MOLAD", ctx)
+    lines = text.split("\n")
+    assert len(lines) == 3
+    assert lines[0].startswith("ראש חודש ")
+    assert lines[1].startswith("ביום ")  # single day-of-week, no "ו" joining
+    assert "בימים" not in lines[1]
+    assert " ו" not in lines[1]
+    assert lines[2].startswith("המולד ביום")
+
+
+def test_molad_tag_two_day_rosh_chodesh_has_both_days_joined_by_vav():
+    from pyzmanim.hebrewcalendar import HDate, convert_date, hdate_add_day, hdate_gregorian, last_day_of_hebrew_month
+
+    # Find a 30-day Hebrew month (a two-day Rosh Chodesh for the
+    # following month) that isn't Elul.
+    hd = convert_date(datetime(2024, 1, 1, 12, 0, 0))
+    for _ in range(600):
+        if last_day_of_hebrew_month(hd.month, hd.year) == 30 and hd.month != 6:
+            break
+        hdate_add_day(hd, 1)
+    else:
+        raise AssertionError("could not find a qualifying 30-day month within range")
+
+    ctx = _ctx(hdate_gregorian(hd))
+    text = tagging.render_template("#MOLAD", ctx)
+    lines = text.split("\n")
+    assert len(lines) == 3
+    assert lines[0].startswith("ראש חודש ")
+    assert lines[1].startswith("בימים ")
+    assert " ו" in lines[1]  # second day joined directly onto "ו" (no space)
+
+
+def test_molad_tag_omits_rosh_chodesh_line_before_rosh_hashana():
+    from pyzmanim.hebrewcalendar import convert_date, hdate_add_day, hdate_gregorian
+
+    # Elul 5784 - the upcoming month is Tishrei (Rosh Hashana), which is
+    # NOT Rosh Chodesh (no Birkas HaChodesh is said for it) - only the
+    # molad line should be present, no "ראש חודש" line at all.
+    hd = convert_date(datetime(2024, 1, 1, 12, 0, 0))
+    while hd.month != 6:  # 6 = Elul
+        hdate_add_day(hd, 1)
+    ctx = _ctx(hdate_gregorian(hd))
+    text = tagging.render_template("#MOLAD", ctx)
+    lines = text.split("\n")
+    assert len(lines) == 1
+    assert "ראש חודש" not in text
+    assert "ראש השנה" not in text  # not asserted BY this tag, just never fabricated
+    assert lines[0].startswith("המולד ביום")
+
+
+def test_molad_tag_molad_line_matches_get_molad_directly():
+    from pyzmanim.hebrewcalendar import HDate, get_molad, hdate_add_month
+    from pyzmanim.hdateformat import molad_format
+
     ctx = _ctx(datetime(2024, 1, 15, 12, 0, 0))  # 5 Shevat 5784
-    text = tagging.render_template("#MOLAD", ctx)
-
-    hd = ctx.now
-    current_name = num_to_h_month(hd.month, hd.leap)
-    hd_next = HDate(**hd.__dict__)
-    hdate_add_month(hd_next, 1)
-    expected_name = num_to_h_month(hd_next.month, hd_next.leap)
-    expected_molad = molad_format(get_molad(hd_next.year, hd_next.month))
-    # The "מולד חודש <name>:" HEADING itself must name the UPCOMING
-    # month, never the current one (note: the current month's name MAY
-    # still legitimately appear elsewhere in the text, e.g. inside the
-    # molad's own date-of-occurrence string - molad_format's reported day
-    # the molad occurs on is itself usually still within the CURRENT
-    # Hebrew month, e.g. "ל שבט" for a molad occurring on 30 Shevat even
-    # though it's heralding the month of Adar - so only the heading
-    # itself is checked here, not the text as a whole).
-    assert f"מולד חודש {current_name}" not in text
-    assert f"מולד חודש {expected_name}" in text
-    assert expected_molad in text
-    # Exactly ONE molad reported, ever - never the current month's too.
-    assert text.count("מולד חודש") == 1
-
-
-def test_molad_tag_still_shows_only_upcoming_month_near_month_end():
-    # Near the end of a month (the scenario that used to ALSO show the
-    # current month's molad, before this tag was simplified to only ever
-    # report the upcoming one) - must still report only ONE molad, for
-    # the month AFTER the current one.
-    from pyzmanim.hebrewcalendar import HDate, get_molad, hdate_add_month
-    from pyzmanim.hdateformat import molad_format, num_to_h_month
-
-    ctx = _ctx(datetime(2026, 10, 9, 12, 0, 0))  # 28 Tishrei 5787 (near month-end)
-    text = tagging.render_template("#MOLAD", ctx)
-
     hd_next = HDate(**ctx.now.__dict__)
     hdate_add_month(hd_next, 1)
-    expected_name = num_to_h_month(hd_next.month, hd_next.leap)
-    expected_molad = molad_format(get_molad(hd_next.year, hd_next.month))
-    assert text.count("מולד חודש") == 1
-    assert f"מולד חודש {expected_name}" in text
-    assert expected_molad in text
+    # The tag renders the molad with full_date=False (no Hebrew date - see
+    # the "Birkas HaChodesh"-style format in tagging._tag_molad), and the
+    # day-of-week here is the molad's own weekday, which can differ from
+    # the Rosh Chodesh day(s)-of-week lines above.
+    expected_molad_line = f"המולד ב{molad_format(get_molad(hd_next.year, hd_next.month), full_date=False)}"
+    text = tagging.render_template("#MOLAD", ctx)
+    assert expected_molad_line in text.split("\n")
 
 
 def test_cmd_tag_pattern_captures_args():

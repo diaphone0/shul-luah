@@ -33,6 +33,8 @@
   "cmd_tag_timeout_seconds": 10.0,
   "cmd_tag_global_args": [],
   "cmd_tick_seconds": 300.0,
+  "export_pdf": true,
+  "export_pdf_dir": null,
   "clock_style": {
     "hour_length_ratio": 0.5,
     "minute_length_ratio": 0.85,

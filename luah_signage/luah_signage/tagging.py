@@ -62,7 +62,7 @@ from datetime import timedelta
 from typing import Callable, Iterable, Protocol
 
 from pyzmanim import dafyomi, hdateformat, shiur, zmanim
-from pyzmanim.hdateformat import molad_format, num_to_h_month
+from pyzmanim.hdateformat import molad_format, num_to_h_month, num_to_wday
 from pyzmanim.hebrewcalendar import (
     HDate,
     YomTov,
@@ -79,6 +79,7 @@ from pyzmanim.hebrewcalendar import (
     is_assur_be_melachah,
     is_candle_lighting,
     is_shabbos_mevorchim,
+    last_day_of_hebrew_month,
 )
 
 from .zman_context import ZmanContext
@@ -521,23 +522,43 @@ def _tag_dayinfo(ctx: ZmanContext, offset_minutes: int) -> str:
 
 
 def _tag_molad(ctx: ZmanContext, offset_minutes: int) -> str:
-    """Returns the molad (new moon) announcement for the UPCOMING Hebrew
-    month - i.e. the next Rosh Chodesh after ``ctx.now`` - NOT the
-    current month's own (already-passed) molad. Unlike a monthly
-    calendar-view tool (see ``print_hebrew_month.py``'s ``print_molad``/
-    the original VBA's ``calendar_utils_get_month_molad_info`` in
-    ``reference/vbzmanim/util/calendar_utils.bas``, which this tag was
-    originally modeled on and shows BOTH the current and, conditionally,
-    the next month's molad for a whole-month display), a live daily
-    signage display only ever cares about what's still ahead - the
-    current month's molad is stale/irrelevant information by the time
-    today is any day other than the 1st."""
-    hd_next_month = HDate(**ctx.now.__dict__)
+    """Returns the Rosh Chodesh day(s)-of-week and molad (new moon)
+    announcement for the UPCOMING Hebrew month - i.e. the next Rosh
+    Chodesh after ``ctx.now`` - NOT the current month's own (already-
+    passed) molad/Rosh Chodesh. Mirrors the traditional Shabbos Mevorchim
+    "Birkas HaChodesh" announcement format."""
+    hd = ctx.now
+    hd_next_month = HDate(**hd.__dict__)
     hdate_add_month(hd_next_month, 1)
     molad = get_molad(hd_next_month.year, hd_next_month.month)
     month_name = num_to_h_month(hd_next_month.month, hd_next_month.leap)
-    return f"מולד חודש {month_name}:\n{molad_format(molad)}"
+    lines: list[str] = []
+    if hd_next_month.month != 7:
+        # Rosh Chodesh day(s)-of-week: whichever day(s) actually carry the
+        # ROSH_CHODESH designation for the upcoming month, per
+        # get_rosh_chodesh's own day==30-or-day==1 definition - either
+        # JUST day 1 of next month (a one-day Rosh Chodesh, when the
+        # CURRENT month has only 29 days), or BOTH day 30 of the current
+        # month AND day 1 of next month (a two-day Rosh Chodesh, when the
+        # current month has 30 days).
+        last_day_of_current_month = last_day_of_hebrew_month(hd.month, hd.year)
+        hd_last_day_of_current_month = HDate(**hd.__dict__)
+        hdate_add_day(hd_last_day_of_current_month, last_day_of_current_month - hd.day)
+        hd_day1_of_next_month = HDate(**hd_last_day_of_current_month.__dict__)
+        hdate_add_day(hd_day1_of_next_month, 1)
+        
+        lines.append(f"ראש חודש {month_name}")
 
+        if last_day_of_current_month == 30:
+            day1 = num_to_wday(hd_last_day_of_current_month)
+            day2 = num_to_wday(hd_day1_of_next_month)
+            lines.append(f"בימים {day1} ו{day2}")
+        else:
+            day1 = num_to_wday(hd_day1_of_next_month)
+            lines.append(f"ביום {day1}")
+
+    lines.append(f"המולד ב{molad_format(molad, full_date=False)}")
+    return "\n".join(lines)
 
 
 # tag name -> callable(ctx, offset_minutes) -> rendered string
@@ -574,6 +595,7 @@ TAG_REGISTRY: dict[str, Callable[[ZmanContext, int], str]] = {
     "SUNSET": lambda ctx, off: _fmt_time(zmanim.getelevationsunset(ctx.now, ctx.location), off),
     "TZAIS": lambda ctx, off: _fmt_time(zmanim.gettzais8p5(ctx.now, ctx.location), off),
     "TZAISYESHIVA": lambda ctx, off: _fmt_time(zmanim.gettzaisyeshiva(ctx.now, ctx.location, True), off, True),
+    "TZAISSEFARADI": lambda ctx, off: _fmt_time(zmanim.gettzais_eli_sefaradi(ctx.now, ctx.location, True), off, True),
 }
 
 # Tags that are handled elsewhere (analog clock shape generation, deferred
@@ -621,6 +643,27 @@ def _render_tag_match(match: re.Match, ctx: ZmanContext, cmd_cache: dict[str, st
             return match.group(0)
         value = renderer(ctx, offset)
     return _apply_newline_format(value, match.group(4))
+
+
+# Digital-clock text tags - tags whose rendered value IS a clock display
+# (see refresh()'s return-value docstring and
+# PresentationController.refresh_content, which uses this to decide whether
+# a tag change warrants a PDF export). Analog clocks are handled entirely
+# separately (refresh_clock / uno_shapes.AnalogClock) and never appear in
+# a TrackedShape at all. #DICLOCK is the only digital-clock text tag
+# currently defined in TAG_REGISTRY; kept as a set/function so adding
+# future clock-like text tags only requires editing this one place.
+_CLOCK_TEXT_TAGS = {"DICLOCK"}
+
+
+def is_clock_text_tag(tag_name: str) -> bool:
+    """True if ``tag_name`` is a digital-clock text tag (currently just
+    #DICLOCK) whose rendered value is a clock display - used to filter out
+    purely-clock tag changes when deciding whether a refresh should
+    trigger a PDF export (see
+    PresentationController.refresh_content and
+    TrackedShape.refresh's return value)."""
+    return tag_name in _CLOCK_TEXT_TAGS
 
 
 def render_template(
@@ -700,7 +743,7 @@ class TrackedShape:
     def __post_init__(self) -> None:
         self._static_segments, self._tag_matches = _split_template(self.template)
 
-    def refresh(self, ctx: ZmanContext, cmd_cache: dict[str, str] | None = None, nudge: bool = False) -> None:
+    def refresh(self, ctx: ZmanContext, cmd_cache: dict[str, str] | None = None, nudge: bool = False) -> set[str]:
         """Re-renders every tag in this shape's template against ``ctx``
         (and ``cmd_cache``, for any #CMD tag), updating only the ranges
         whose rendered value actually changed since the last refresh (see
@@ -721,15 +764,24 @@ class TrackedShape:
         actually changed, and silently does nothing at all if
         ``self.shape`` has no ``nudge`` method (e.g. a plain test double)
         - only real UNO shapes (uno_shapes.UnoTextShape) are expected to
-        provide one."""
+        provide one.
+
+        Returns the set of TAG NAMES (e.g. ``{"SUNSET"}``, ``{"DICLOCK"}``)
+        whose rendered value actually changed during this call - an empty
+        set when nothing changed. Callers can use this to distinguish a
+        genuine content change from a merely-clock-typed tick (see
+        ``is_clock_text_tag`` and PresentationController.refresh_content,
+        which filters out purely-clock changes before deciding on a PDF
+        export)."""
         if not self._tag_matches:
-            return
+            return set()
         if self._current_values is None:
             # First refresh: the live shape text still literally equals
             # `self.template` (nothing substituted yet), so each tag's
             # CURRENT text is its own raw matched substring.
             self._current_values = [m.group(0) for m in self._tag_matches]
 
+        changed_tags: set[str] = set()
         changed = False
         offset = 0
         for i, match in enumerate(self._tag_matches):
@@ -740,12 +792,19 @@ class TrackedShape:
                 self.shape.set_text_range(offset, offset + len(old_value), new_value)
                 self._current_values[i] = new_value
                 changed = True
+                # Record the NAME (not the matched text) of every tag whose
+                # rendered value changed this call - lets callers (see
+                # PresentationController.refresh_content) distinguish a
+                # genuine content change from a clock-only tick.
+                changed_tags.add(match.group(1))
             offset += len(self._current_values[i])
 
         if changed and nudge:
             nudge_method = getattr(self.shape, "nudge", None)
             if nudge_method is not None:
                 nudge_method()
+
+        return changed_tags
 
 
 def scan_shapes_for_tags(shapes: list[TextShapeLike]) -> list[TrackedShape]:

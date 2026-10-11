@@ -46,6 +46,7 @@ from pathlib import Path
 
 from . import tagging
 from . import config as config_module
+from . import presentation_pdf
 from .config import LuahConfig
 from .slide_advance import DynamicSlideAdvancer
 from .uno_shapes import (
@@ -392,6 +393,21 @@ class PresentationController:
         # an explicit lock thanks to the GIL, same reasoning as
         # self._cmd_cache's dict access (see refresh_cmd_tags's docstring).
         self._cmd_cache_dirty: bool = False
+        # The last `today_is_chol` value applied by _apply_day_mode_visibility
+        # (None before the first ever application). Used to detect the
+        # non-chol -> chol day-mode slideshow flip that triggers a PDF
+        # export (see _apply_day_mode_visibility and export_pdfs).
+        self._last_today_is_chol: bool | None = None
+        # True for the FIRST refresh_content() call after each load/reload -
+        # that first call is performed inside _prepare_document, which then
+        # ALSO calls export_pdfs() explicitly for the "first round of
+        # updates" publish. Guarding the tag-change export with this flag
+        # prevents that same first render from triggering a SECOND,
+        # redundant export (it renders raw "#TAG" text -> computed values,
+        # so every known tag "changes" that call - see refresh_content).
+        # Reset back to True at the start of every load (see
+        # _close_document).
+        self._first_content_refresh: bool = True
 
     # -- loading ------------------------------------------------------
     def load(self) -> None:
@@ -489,6 +505,8 @@ class PresentationController:
         self._pending_transition_slide_index = None
         self._last_known_slide_index = None
         self._cmd_arg_keys = set()
+        self._last_today_is_chol = None
+        self._first_content_refresh = True
         # NOTE: self._cmd_cache is intentionally NOT reset here - see its
         # field docstring in __init__ for why previously-resolved #CMD
         # values should survive a reload.
@@ -657,6 +675,20 @@ class PresentationController:
         self._warm_up_slides()
         self._log_prepare_summary()
 
+        # First-round-of-updates export: _prepare_document is the single
+        # routine reached by BOTH the initial launch load (load()) and every
+        # reload()/recovery-reconnect, and by this point the deck has been
+        # scanned, tagged text rendered once (refresh_content above), and
+        # day-mode visibility applied - i.e. "finishing the first round of
+        # all updates after launch/reload" (see app.py and requirement 1/2
+        # in presentation_pdf.py's module docstring). Note #CMD tag values
+        # may still be blank here (their first background fetch - see
+        # refresh_cmd_tags - starts AFTER _connect_and_load returns); they
+        # are picked up by the very next content-refresh tick and, if a
+        # non-clock #CMD value then changes, trigger a further export via
+        # refresh_content's own change detection below.
+        self.export_pdfs()
+
     def _apply_day_mode_visibility(self, today_is_chol: bool) -> None:
         """Shows/hides every #CHOLONLY/#NONCHOLONLY/#HIDDEN-tagged slide
         according to whether today counts as chol - see
@@ -731,6 +763,19 @@ class PresentationController:
                         _suppress_slide_timing(slide)
             except Exception:
                 pass
+
+        # Detect the requirement 4 trigger: the day-mode slideshow switching
+        # from NON-chol-only to CHOL-only (a False->True edge on
+        # today_is_chol). On that flip the deck's visible slide set changes
+        # from the #NONCHOLONLY/always slides to the #CHOLONLY/always
+        # slides, so re-publish the two PDFs. Tracked on the controller
+        # (not just locally) so the first application after a load isn't
+        # misread as a "shift" - _close_document resets
+        # _last_today_is_chol to None before each fresh load.
+        was_chol = self._last_today_is_chol
+        self._last_today_is_chol = today_is_chol
+        if was_chol is False and today_is_chol is True:
+            self.export_pdfs()
 
     def _warm_up_slides(self) -> None:
         """Briefly switches the (off-screen, invisible) editing view's
@@ -813,6 +858,56 @@ class PresentationController:
         for tracked in self.tracked_shapes:
             preview = tracked.template.replace("\n", " \\n ")
             print(f"  tag shape: {preview!r}")
+
+    def export_pdfs(self) -> list:
+        """Exports the currently-loaded presentation to the two per-day-mode
+        PDFs (luah_weekday.pdf / luah_shabbos.pdf) in the configured output
+        directory - see presentation_pdf.py for what each PDF contains and
+        how the subsets are selected.
+
+        No-op (returns ``[]``) when config.export_pdf is False (the
+        feature's on/off switch), when the document isn't loaded yet, or if
+        the UNO export raises for any reason (a failed export is logged and
+        swallowed rather than crashing the tick - it's an auxiliary,
+        best-effort publish step, never a reason to take down the signage
+        display). The live document is left open/unmodified - only a
+        read-side PDF render happens."""
+        if not self.config.export_pdf:
+            return []
+        if self.document is None or not self._slides_by_index:
+            return []
+        try:
+            output_dir = presentation_pdf.resolve_output_dir(self.config)
+            # Diagnostic: report exactly which 0-based slide indices belong
+            # to each PDF, so a smoke test can confirm the subsets are
+            # correct at a glance (0-based deck indices). Always-visible
+            # slides appear in both; CHOLONLY only in weekday; NONCHOLONLY
+            # only in shabbos; HIDDEN/CONFIG in neither.
+            slide_count = len(self._slides_by_index)
+            weekday = presentation_pdf.slide_indices_for_day(
+                slide_count, self._slide_day_mode, non_chol=False
+            )
+            shabbos = presentation_pdf.slide_indices_for_day(
+                slide_count, self._slide_day_mode, non_chol=True
+            )
+            print(
+                "luah_signage: exporting day-mode PDFs "
+                f"(weekday slides={weekday} shabbos slides={shabbos})"
+            )
+            written = presentation_pdf.export_day_pdfs(
+                desktop=self.desktop,
+                document=self.document,
+                slides=self._slides_by_index,
+                slide_day_mode=self._slide_day_mode,
+                output_dir=output_dir,
+            )
+            print(
+                "luah_signage: wrote " + ", ".join(str(p) for p in written)
+            )
+            return written
+        except Exception as exc:
+            print(f"luah_signage: PDF export failed (skipped): {exc!r}")
+            return []
 
     # -- per-tick refresh ------------------------------------------------
     def refresh_clock(self, now: datetime, loop_time: float | None = None) -> None:
@@ -948,13 +1043,25 @@ class PresentationController:
         if self.tracked_shapes:
             use_lock = self.config.debug_repaint_lock_controllers
             nudge_text_shapes = self.config.debug_repaint_nudge_text_shapes
+            # Whether any NON-CLOCK tag's rendered value changed this tick -
+            # used for the requirement 3 PDF-export trigger. Clock tags
+            # (see tagging.is_clock_text_tag: currently just #DICLOCK) are
+            # deliberately EXCLUDED - a clock's per-minute/per-second value
+            # changing is not a reason to re-publish the PDFs (analog
+            # clocks are handled entirely separately in refresh_clock and
+            # never reach this loop at all). Any OTHER tag changing - zmanim,
+            # prayer times via #CMD, parsha/dayinfo, etc. - re-triggers an
+            # export, so the PDFs track the meaningful content.
+            non_clock_changed = False
             if use_lock:
                 self.document.lockControllers()
             try:
                 for tracked in self.tracked_shapes:
                     if debug_log:
                         before = tracked.shape.get_text()
-                        tracked.refresh(ctx, cmd_cache=self._cmd_cache, nudge=nudge_text_shapes)
+                        changed_tags = tracked.refresh(
+                            ctx, cmd_cache=self._cmd_cache, nudge=nudge_text_shapes
+                        )
                         after = tracked.shape.get_text()
                         if after != before:
                             print(
@@ -962,10 +1069,24 @@ class PresentationController:
                                 f"old={before!r} new={after!r}"
                             )
                     else:
-                        tracked.refresh(ctx, cmd_cache=self._cmd_cache, nudge=nudge_text_shapes)
+                        changed_tags = tracked.refresh(
+                            ctx, cmd_cache=self._cmd_cache, nudge=nudge_text_shapes
+                        )
+                    if any(not tagging.is_clock_text_tag(t) for t in changed_tags):
+                        non_clock_changed = True
             finally:
                 if use_lock:
                     self.document.unlockControllers()
+            # Publish updated PDFs if a meaningful (non-clock) tag changed.
+            # Skipped on the very first refresh after a load/reload - that
+            # first render (raw "#TAG" -> computed values means every tag
+            # "changes" that call) is already followed by an explicit
+            # export_pdfs() call from _prepare_document, so firing here too
+            # would just duplicate that export (see
+            # self._first_content_refresh's docstring in __init__).
+            if non_clock_changed and not self._first_content_refresh:
+                self.export_pdfs()
+            self._first_content_refresh = False
         if self._slide_day_mode:
             self._apply_day_mode_visibility(ctx.today_is_chol)
 

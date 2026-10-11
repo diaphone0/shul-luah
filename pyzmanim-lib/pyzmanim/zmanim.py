@@ -448,6 +448,16 @@ def gettzaisyeshiva(date_in: HDate, here: Location, adjust_for_elevation: bool =
     offset = (shaahzmanis * 18 / 60) if shaahzmanis > MINUTES60 else MINUTES18
     return calctimeoffset(sunset, offset)
 
+def gettzais_eli_sefaradi(date_in: HDate, here: Location, adjust_for_elevation: bool = False) -> HDate:
+    #this method is similar to gettzaisyeshiva, but it takes 13.5 zmanis minutes after sunset instead of 18 zmanis minutes, as per Eliyahu's opinion (Sefardi)
+    #in case 13.5 zmanis minutes is less than 15 real minutes, it will use 15 real minutes instead.
+    MINUTES15 = 15 * 60000
+    sunset = getelevationsunset(date_in, here) if adjust_for_elevation else getsunset(date_in, here)
+    shaahzmanis = getshaahzmanisgra(date_in, here)
+    if shaahzmanis == 0:
+        return EMPTY_HDATE
+    offset = (shaahzmanis * 13.5 / 60) if shaahzmanis * 13.5 / 60 > MINUTES15 else MINUTES15
+    return calctimeoffset(sunset, offset)
 
 def calcmoladoffset(date_in: HDate, offsetsec: int) -> HDate:
     from pyzmanim.hebrewcalendar import get_molad

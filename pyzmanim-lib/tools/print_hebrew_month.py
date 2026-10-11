@@ -32,10 +32,10 @@ from pyzmanim.hebrewcalendar import (
     YomTov, Parshah,
 )
 from pyzmanim.hdateformat import (
-    hdate_format, molad_format, num_to_h_char, num_to_h_month,
+    hdate_format, molad_format, num_to_h_char, num_to_h_month, num_to_wday,
     parshah_format, yom_tov_format,
 )
-from pyzmanim.zmanim import getelevationsunset, gettzais8p5, getsunrise, getsunset, Location
+from pyzmanim.zmanim import getelevationsunset, gettzais8p5, getsunrise, getsunset, Location, gettzais_eli_sefaradi, gettzaisyeshiva
 from pyzmanim.dafyomi import get_daf_yomi_format, get_mishna_yomi_format
 from pyzmanim.shiur import get_halacha, get_rambam, get_tanya
 
@@ -256,7 +256,7 @@ def get_day_info(hd: HDate, *, show_limud: bool = True,
     # -- Sunrise / sunset (primary location, or all if none selected) --
     primary_loc, primary_offset = location if location else CITIES[0][1:]
     sr = _round_time(hdate_gregorian(getsunrise(hd, primary_loc)))
-    ss = _round_time(hdate_gregorian(getsunset(hd, primary_loc)))
+    ss = _round_time(hdate_gregorian(getelevationsunset(hd, primary_loc)))
     lines.append(f"זריחה: {sr.strftime('%H:%M')}  שקיעה: {ss.strftime('%H:%M')}")
 
     # 5. Candle lighting / havdalah times
@@ -508,10 +508,129 @@ def print_csv(grid: list[list[list[str]]], *, reverse: bool = False) -> None:
             csv_row.append(";".join(cell))
         writer.writerow(csv_row)
 
+def round_time_to_nearest_5_minutes(dt: datetime) -> datetime:
+    """Round a datetime to the nearest 5 minutes."""
+    # Round to nearest minute first
+    dt = _round_time(dt)
+    # Then round to nearest 5 minutes
+    minute = (dt.minute + 2) // 5 * 5
+    if minute == 60:
+        dt += timedelta(hours=1)
+        minute = 0
+    return dt.replace(minute=minute, second=0, microsecond=0)
+
+def get_mincha_time_for_upcoming_week(location: Location, time_offset_minutes: int = 15) -> datetime:
+    #date of week first day is a sunday as follows: if current weekday is <=friday, then week first day is the last sunday, else if current weekday is saturday, then week first day is the next sunday
+    #should always be a sunday, so that we can get the mincha time for the upcoming (or current) week.
+    week_first_day_date = datetime.now()
+    #print(f"Current date: {week_first_day_date}")
+    #print(f"Current weekday: {week_first_day_date.weekday()} (0=Monday, 6=Sunday)")
+    if week_first_day_date.weekday() <= 4: #monday to friday
+        week_first_day_date -= timedelta(days=week_first_day_date.weekday() + 1) #go back to last sunday
+    elif week_first_day_date.weekday() == 5: #saturday
+        week_first_day_date += timedelta(days=1) #go forward to next sunday
+    #elif week_first_day_date.weekday() == 6: #sunday
+    #    week_first_day_date -= timedelta(days=6) #go back to last sunday
+    #print(f"Week first day date (Sunday): {week_first_day_date}")
+    #get the earliest sunset time for the upcoming week, excluding friday and saturday (sunday to thursday)
+    sunset_times = []
+    for i in range(5): #sunday to thursday
+        day_date = week_first_day_date + timedelta(days=i)
+        hd = convert_date(day_date)
+        hd.offset = 10800 if _is_israel_dst(day_date) else 7200
+        hd.EY = True
+        sunset_time = _round_time(hdate_gregorian(getelevationsunset(hd, location)))
+        sunset_times.append(sunset_time)
+    
+    #print(sunset_times)
+    earliest_sunset_time = min(sunset_times,key=lambda x: x.time())
+    #print(f"Earliest sunset time for the upcoming week (excluding Friday and Saturday): {earliest_sunset_time}")
+    #return the earliest sunset time for the upcoming week, excluding friday and saturday, minus 15 minutes for mincha time
+    mincha_time = earliest_sunset_time - timedelta(minutes=time_offset_minutes)
+    #return as string in format "HH:MM", rounded to 5 minutes
+    mincha_time = mincha_time.replace(second=0, microsecond=0)
+    mincha_time = mincha_time - timedelta(minutes=mincha_time.minute % 5)
+    return mincha_time
+def get_maariv_time_for_upcoming_week(location: Location, time_offset_minutes: int = 15) -> datetime:
+    week_first_day_date = datetime.now()
+    #print(f"Current date: {week_first_day_date}")
+    #print(f"Current weekday: {week_first_day_date.weekday()} (0=Monday, 6=Sunday)")
+    if week_first_day_date.weekday() <= 4: #monday to friday
+        week_first_day_date -= timedelta(days=week_first_day_date.weekday() + 1) #go back to last sunday
+    elif week_first_day_date.weekday() == 5: #saturday
+        week_first_day_date += timedelta(days=1) #go forward to next sunday
+    #elif week_first_day_date.weekday() == 6: #sunday
+    #    week_first_day_date -= timedelta(days=6) #go back to last sunday
+    #print(f"Week first day date (Sunday): {week_first_day_date}")
+    #get the earliest sunset time for the upcoming week, excluding friday and saturday (sunday to thursday)
+    tzais_times = []
+    for i in range(5): #sunday to thursday
+        day_date = week_first_day_date + timedelta(days=i)
+        hd = convert_date(day_date)
+        hd.offset = 10800 if _is_israel_dst(day_date) else 7200
+        hd.EY = True
+        tzais_time = _round_time(hdate_gregorian(gettzais_eli_sefaradi(hd, location,True)))
+        tzais_times.append(tzais_time)
+    print(tzais_times)
+
+    latest_tzais_time = max(tzais_times,key=lambda x: x.time())
+    #print(f"Latest tzais time for the upcoming week (excluding Friday and Saturday): {latest_tzais_time}")
+    #return the latest tzais time for the upcoming week, excluding friday and saturday, plus 15 minutes for maariv time
+    maariv_time = latest_tzais_time #+ timedelta(minutes=time_offset_minutes)
+    #return as string in format "HH:MM", rounded to 5 minutes
+    maariv_time = round_time_to_nearest_5_minutes(maariv_time)
+    return maariv_time
+
+def _tag_molad(hd: Hdate) -> str:
+    hd_next_month = HDate(**hd.__dict__)
+    hdate_add_month(hd_next_month, 1)
+    molad = get_molad(hd_next_month.year, hd_next_month.month)
+    month_name = num_to_h_month(hd_next_month.month, hd_next_month.leap)
+    lines: list[str] = []
+    if hd_next_month.month != 7:
+        # Rosh Chodesh day(s)-of-week: whichever day(s) actually carry the
+        # ROSH_CHODESH designation for the upcoming month, per
+        # get_rosh_chodesh's own day==30-or-day==1 definition - either
+        # JUST day 1 of next month (a one-day Rosh Chodesh, when the
+        # CURRENT month has only 29 days), or BOTH day 30 of the current
+        # month AND day 1 of next month (a two-day Rosh Chodesh, when the
+        # current month has 30 days).
+        last_day_of_current_month = last_day_of_hebrew_month(hd.month, hd.year)
+        hd_last_day_of_current_month = HDate(**hd.__dict__)
+        hdate_add_day(hd_last_day_of_current_month, last_day_of_current_month - hd.day)
+        hd_day1_of_next_month = HDate(**hd_last_day_of_current_month.__dict__)
+        hdate_add_day(hd_day1_of_next_month, 1)
+        
+        lines.append(f"ראש חודש {month_name}")
+
+        if last_day_of_current_month == 30:
+            day1 = num_to_wday(hd_last_day_of_current_month)
+            day2 = num_to_wday(hd_day1_of_next_month)
+            lines.append(f"בימים {day1} ו{day2}")
+        else:
+            day1 = num_to_wday(hd_day1_of_next_month)
+            lines.append(f"ביום {day1}")
+
+    lines.append(f"המולד ב{molad_format(molad, full_date=False)}")
+    return "\n".join(lines)
+
+
+
+def test_molad():
+    #get molad for now
+    #from pyzmanim_lib.hebrew_calendar import HDate, _tag_molad
+    #from datetime import datetime
+    #date_now = datetime.now()
+    hd_now = hebrew_today()
+    print(_tag_molad(hd_now))
 
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    #print(get_mincha_time_for_upcoming_week(LOCATION_PRESETS["eli"][0], 15)) #dbg
+    #print(get_maariv_time_for_upcoming_week(LOCATION_PRESETS["eli"][0], 15)) #dbg
+    #test_molad()
+    #exit(0) #dbg
     import argparse
     parser = argparse.ArgumentParser(description="Jewish calendar month view")
     parser.add_argument("--month", type=int, help="Hebrew month (1=Nissan .. 13=Adar II)")

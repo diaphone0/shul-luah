@@ -205,6 +205,19 @@ def test_chumash_and_tehillim_do_not_crash():
     assert shiur.get_rambam(h, False)
 
 
+def test_num_to_wday_short_sunday_through_friday():
+    # 7 Jan 2024 = Sunday, so consecutive days step through the whole week.
+    expected = ["א", "ב", "ג", "ד", "ה", "ו"]
+    for i, letter in enumerate(expected):
+        h = convert_date(datetime(2024, 1, 7 + i))
+        assert hdateformat.num_to_wday_short(h) == letter
+
+
+def test_num_to_wday_short_shabbos():
+    h = convert_date(datetime(2024, 1, 6))  # Shabbos Parshas Shemot
+    assert hdateformat.num_to_wday_short(h) == "ש"
+
+
 if __name__ == "__main__":
     import sys
     import traceback
