@@ -14,6 +14,21 @@ minutes (``+18``, ``-45``), or an ``HH:MM`` duration (``+00:30``,
 just clearer to author. Both forms are equivalent ways of specifying the
 same total-minutes offset - ``+00:30`` and ``+30`` mean the same thing.
 
+An offset may optionally be followed by a single CONTEXT letter - ``N``
+(now, the default, used whenever the letter is omitted), ``S`` (the
+upcoming/current Shabbos), ``E`` (Erev Shabbos), or ``A`` (auto - ``E`` on
+any erev-shabbos/candle-lighting day - which is not always a Friday, e.g.
+Erev Pesach - and ``S`` every other day, so a deck author doesn't need to
+know in advance whether "today" is chol/Shabbos/Erev Shabbos) - selecting
+which HDate stands in for "now" when the tag is computed, e.g.
+``#SUNSET-30E`` renders identically to ``#SHABBOS-30`` (both are "30
+minutes before sunset on Erev Shabbos"). See ``_context_for_suffix``. A
+context letter requires an explicit offset to appear right before it (use
+a zero offset, e.g. ``+0S``, to pick a context with no actual time shift)
+- this is what lets ``TAG_PATTERN`` unambiguously tell a context letter
+apart from the tag
+NAME itself, which is otherwise free to contain any uppercase letter.
+
 ``#CMD:<args>`` is a special tag (handled separately from the generic
 TAG_REGISTRY-based tags above): it runs an external script/command
 (configured once, in ``config.json``'s ``cmd_tag_executable``) and
@@ -57,7 +72,7 @@ import os
 import re
 import shlex
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from typing import Callable, Iterable, Protocol
 
@@ -85,20 +100,39 @@ from pyzmanim.hebrewcalendar import (
 from .zman_context import ZmanContext
 
 # Group 2 matches either "+18"/"-45" (plain minutes) or "+00:30"/"-01:15"
-# (HH:MM duration) - see module docstring. Group 3 (only meaningful for
-# #CMD) matches a ":<...>" argument-string suffix, e.g. "#CMD:<-city tzfat>"
-# captures "-city tzfat" in group 3. Group 4 is a newline-formatting
-# suffix: ":n" inserts a newline BEFORE the tag's rendered value, ":na"
-# inserts one AFTER it (e.g. "#DAYINFO:n" / "#DAYINFO:na") - see
-# _apply_newline_format. All three suffix forms never collide: group 2
-# only matches if the character right after the tag name is +/-, group 3
-# only matches if it's a literal ":<" instead, and group 4 only matches a
+# (HH:MM duration) - see module docstring. Group 3 (only meaningful when
+# group 2 matched too) is a single-letter CONTEXT suffix directly after the
+# offset digits - "N" (now, the default when omitted), "S" (next/current
+# Shabbos - ctx.shabbos), "E" (Erev Shabbos - ctx.erev_shabbos), or "A"
+# (auto - ctx.erev_shabbos if today IS the erev-shabbos/candle-lighting
+# day, else ctx.shabbos) - see _context_for_suffix. A context letter can
+# only appear together with an explicit offset (the offset's digits are
+# what disambiguate it from being swallowed into the tag NAME itself, e.g.
+# a context-only "#SUNSETS" would just parse as an unknown tag named
+# "SUNSETS") - use a zero offset (e.g. "+0S") to select a context without
+# actually shifting the time. Group 4 (only meaningful for #CMD) matches a
+# ":<...>" argument-string suffix, e.g. "#CMD:<-city tzfat>" captures
+# "-city tzfat" in group 4. Group 5 is a newline-formatting suffix: ":n"
+# inserts a newline BEFORE the tag's rendered value, ":na" inserts one
+# AFTER it (e.g. "#DAYINFO:n" / "#DAYINFO:na") - see
+# _apply_newline_format. None of these suffix forms collide: group 2 only
+# matches if the character right after the tag name is +/-, group 3 only
+# matches right after group 2's digits and only if it's one of N/S/E/A,
+# group 4 only matches a literal ":<" instead, and group 5 only matches a
 # literal ":n"/":na" followed by a non-word character or end-of-string
 # (the trailing ``\b`` prevents it from misfiring on an unrelated
 # ":name"-like suffix that merely happens to start with "n").
 TAG_PATTERN = re.compile(
-    r"#([A-Z][A-Z0-9]*)([+-]\d+:\d{2}|[+-]\d+)?(?::<([^>]*)>)?(?::(na|n)\b)?"
+    r"#([A-Z][A-Z0-9]*)(?:([+-]\d+:\d{2}|[+-]\d+)([NSEA])?)?(?::<([^>]*)>)?(?::(na|n)\b)?"
 )
+
+# Context-suffix letters (TAG_PATTERN's group 3) - which HDate stands in
+# for "now" when rendering a tag. "N" (or no suffix at all) is the default
+# and means the renderer sees ctx unchanged (ctx.now stays ctx.now).
+CONTEXT_NOW = "N"
+CONTEXT_SHABBOS = "S"
+CONTEXT_EREV_SHABBOS = "E"
+CONTEXT_AUTO = "A"
 
 # Tag name handled specially in render_template (does not go through
 # TAG_REGISTRY's uniform (ctx, offset_minutes) -> str signature, since it
@@ -155,6 +189,41 @@ def _parse_offset_minutes(offset_str: str | None) -> int:
         hours_str, minutes_str = body.split(":", 1)
         return sign * (int(hours_str) * 60 + int(minutes_str))
     return sign * int(body)
+
+
+def _context_for_suffix(ctx: ZmanContext, context_letter: str | None) -> ZmanContext:
+    """Returns the effective ``ZmanContext`` a tag should be rendered
+    against, given its optional CONTEXT suffix letter (TAG_PATTERN's group
+    3 - see module docstring). ``None``/``"N"`` (no suffix, or an explicit
+    "now") returns ``ctx`` unchanged. ``"S"``/``"E"`` return a shallow copy
+    of ``ctx`` with ``now`` replaced by ``ctx.shabbos``/``ctx.erev_shabbos``
+    respectively - every renderer in TAG_REGISTRY that computes off of
+    ``ctx.now`` (e.g. SUNSET/TZAIS/SUNRISE/...) then transparently computes
+    against that other day instead, with no per-tag changes needed.
+
+    ``"A"`` (auto) picks "E" whenever today IS the erev-shabbos/candle-
+    lighting day (``ctx.erev_shabbos == ctx.now``) and "S" otherwise. This
+    is deliberately NOT a plain ``ctx.now.wday == 6`` (Friday) check -
+    ``ctx.erev_shabbos`` can land on a non-Friday weekday too (e.g. Erev
+    Pesach), since ``zman_context.py`` derives it from ``is_candle_
+    lighting``, which returns nonzero for several Yom Tov eves besides
+    Friday - so comparing against the already-computed ``ctx.erev_shabbos``
+    directly is the only way to cover every such case correctly. This
+    means "A" always forecasts/stays on whichever of Erev Shabbos or
+    Shabbos is currently "in effect" or coming up next: on an ordinary chol
+    day with no candle-lighting today it looks ahead to the upcoming
+    Shabbos (same as "S"); on Shabbos/Yom Tov itself it stays put (same as
+    "S", since ``ctx.shabbos == ctx.now`` whenever today is already
+    assur-be-melachah - see zman_context.py); on any Erev Shabbos/Yom Tov
+    day it stays put too (same as "E", since ``ctx.erev_shabbos == ctx.now``
+    on that day by construction)."""
+    if context_letter == CONTEXT_SHABBOS:
+        return replace(ctx, now=ctx.shabbos)
+    if context_letter == CONTEXT_EREV_SHABBOS:
+        return replace(ctx, now=ctx.erev_shabbos)
+    if context_letter == CONTEXT_AUTO:
+        return replace(ctx, now=ctx.erev_shabbos if ctx.now == ctx.erev_shabbos else ctx.shabbos)
+    return ctx
 
 
 class TextShapeLike(Protocol):
@@ -329,7 +398,7 @@ def find_cmd_arg_keys(templates: Iterable[str]) -> set[str]:
     for template in templates:
         for match in TAG_PATTERN.finditer(template):
             if match.group(1) == CMD_TAG_NAME:
-                keys.add(match.group(3) or "")
+                keys.add(match.group(4) or "")
     return keys
 
 
@@ -615,7 +684,7 @@ def contains_known_tag(text: str) -> bool:
 
 def _apply_newline_format(value: str, newline_flag: str | None) -> str:
     """Applies a tag's optional ":n"/":na" newline-formatting suffix (see
-    TAG_PATTERN's group 4) to its already-rendered ``value``: ``"n"``
+    TAG_PATTERN's group 5) to its already-rendered ``value``: ``"n"``
     prepends a newline, ``"na"`` appends one, and ``None`` (no suffix)
     leaves it unchanged. A no-op whenever ``value`` is empty, so a
     conditionally-empty tag (e.g. ``#DAYINFO`` on a plain weekday with
@@ -634,15 +703,16 @@ def _render_tag_match(match: re.Match, ctx: ZmanContext, cmd_cache: dict[str, st
     partial update - see its docstring)."""
     tag_name = match.group(1)
     if tag_name == CMD_TAG_NAME:
-        key = match.group(3) or ""
+        key = match.group(4) or ""
         value = (cmd_cache or {}).get(key, "")
     else:
         offset = _parse_offset_minutes(match.group(2))
+        effective_ctx = _context_for_suffix(ctx, match.group(3))
         renderer = TAG_REGISTRY.get(tag_name)
         if renderer is None:
             return match.group(0)
-        value = renderer(ctx, offset)
-    return _apply_newline_format(value, match.group(4))
+        value = renderer(effective_ctx, offset)
+    return _apply_newline_format(value, match.group(5))
 
 
 # Digital-clock text tags - tags whose rendered value IS a clock display

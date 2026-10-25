@@ -49,14 +49,14 @@ def test_tag_pattern_parses_hhmm_offset():
 def test_tag_pattern_parses_newline_format_suffix():
     matches = list(tagging.TAG_PATTERN.finditer("#DAYINFO:n and #DAYINFO:na"))
     assert len(matches) == 2
-    assert matches[0].group(1) == "DAYINFO" and matches[0].group(4) == "n"
-    assert matches[1].group(1) == "DAYINFO" and matches[1].group(4) == "na"
+    assert matches[0].group(1) == "DAYINFO" and matches[0].group(5) == "n"
+    assert matches[1].group(1) == "DAYINFO" and matches[1].group(5) == "na"
 
 
 def test_tag_pattern_no_newline_format_suffix_by_default():
     matches = list(tagging.TAG_PATTERN.finditer("#DAYINFO"))
     assert len(matches) == 1
-    assert matches[0].group(4) is None
+    assert matches[0].group(5) is None
 
 
 def test_tag_pattern_does_not_misfire_on_unrelated_colon_suffix():
@@ -65,7 +65,32 @@ def test_tag_pattern_does_not_misfire_on_unrelated_colon_suffix():
     matches = list(tagging.TAG_PATTERN.finditer("#DAYINFO:nice"))
     assert len(matches) == 1
     assert matches[0].group(0) == "#DAYINFO"
-    assert matches[0].group(4) is None
+    assert matches[0].group(5) is None
+
+
+def test_tag_pattern_parses_context_suffix():
+    matches = list(tagging.TAG_PATTERN.finditer("#SUNSET-30E and #SUNRISE+0S and #TZAIS-18N"))
+    assert len(matches) == 3
+    assert matches[0].group(1) == "SUNSET" and matches[0].group(2) == "-30" and matches[0].group(3) == "E"
+    assert matches[1].group(1) == "SUNRISE" and matches[1].group(2) == "+0" and matches[1].group(3) == "S"
+    assert matches[2].group(1) == "TZAIS" and matches[2].group(2) == "-18" and matches[2].group(3) == "N"
+
+
+def test_tag_pattern_no_context_suffix_by_default():
+    matches = list(tagging.TAG_PATTERN.finditer("#SUNSET-30"))
+    assert len(matches) == 1
+    assert matches[0].group(3) is None
+
+
+def test_tag_pattern_context_suffix_requires_an_explicit_offset():
+    # With no offset digits, a trailing "S"/"E"/"N" is just part of the tag
+    # NAME itself (tag names are free to contain any uppercase letter) -
+    # there is no way to request a context without an offset present.
+    matches = list(tagging.TAG_PATTERN.finditer("#SUNSETS"))
+    assert len(matches) == 1
+    assert matches[0].group(1) == "SUNSETS"
+    assert matches[0].group(2) is None
+    assert matches[0].group(3) is None
 
 
 def test_apply_newline_format_prepends_and_appends():
@@ -190,6 +215,103 @@ def test_parse_offset_minutes_helper():
     assert tagging._parse_offset_minutes("+00:30") == 30
     assert tagging._parse_offset_minutes("-01:15") == -75
     assert tagging._parse_offset_minutes("+02:05") == 125
+
+
+def test_context_for_suffix_none_or_n_returns_ctx_unchanged():
+    ctx = _ctx(datetime(2024, 6, 21, 12, 0, 0))
+    assert tagging._context_for_suffix(ctx, None) is ctx
+    assert tagging._context_for_suffix(ctx, "N") is ctx
+
+
+def test_context_for_suffix_s_swaps_now_for_shabbos():
+    ctx = _ctx(datetime(2024, 6, 21, 12, 0, 0))
+    effective = tagging._context_for_suffix(ctx, "S")
+    assert effective.now == ctx.shabbos
+    assert effective.shabbos == ctx.shabbos
+    assert effective.erev_shabbos == ctx.erev_shabbos
+
+
+def test_context_for_suffix_e_swaps_now_for_erev_shabbos():
+    ctx = _ctx(datetime(2024, 6, 21, 12, 0, 0))
+    effective = tagging._context_for_suffix(ctx, "E")
+    assert effective.now == ctx.erev_shabbos
+
+
+def test_sunset_minus30_erev_shabbos_context_matches_shabbos_tag():
+    # "#SUNSET-30E" should be identical to "#SHABBOS-30", since #SHABBOS is
+    # literally elevation-sunset on Erev Shabbos.
+    ctx = _ctx(datetime(2024, 6, 21, 12, 0, 0))
+    via_context_suffix = tagging.render_template("#SUNSET-30E", ctx)
+    via_shabbos_tag = tagging.render_template("#SHABBOS-30", ctx)
+    assert via_context_suffix == via_shabbos_tag
+
+
+def test_sunrise_zero_offset_shabbos_context_matches_direct_computation():
+    from pyzmanim import zmanim
+
+    ctx = _ctx(datetime(2024, 6, 21, 12, 0, 0))
+    via_context_suffix = tagging.render_template("#SUNRISE+0S", ctx)
+    expected = tagging._fmt_time(zmanim.getsunrise(ctx.shabbos, JERUSALEM))
+    assert via_context_suffix == expected
+
+
+def test_context_suffix_n_is_equivalent_to_omitting_it():
+    ctx = _ctx(datetime(2024, 6, 21, 12, 0, 0))
+    with_n = tagging.render_template("#SUNSET-18N", ctx)
+    without = tagging.render_template("#SUNSET-18", ctx)
+    assert with_n == without
+
+
+def test_tag_pattern_parses_auto_context_suffix():
+    matches = list(tagging.TAG_PATTERN.finditer("#SUNSET-30A"))
+    assert len(matches) == 1
+    assert matches[0].group(1) == "SUNSET"
+    assert matches[0].group(2) == "-30"
+    assert matches[0].group(3) == "A"
+
+
+def test_context_for_suffix_auto_on_friday_matches_erev_shabbos():
+    ctx = _ctx(datetime(2024, 6, 21, 10, 0, 0))  # Friday
+    assert ctx.now.wday == 6
+    effective = tagging._context_for_suffix(ctx, "A")
+    assert effective.now == ctx.erev_shabbos
+
+
+def test_context_for_suffix_auto_on_shabbos_matches_shabbos():
+    ctx = _ctx(datetime(2024, 6, 22, 10, 0, 0))  # Saturday
+    assert ctx.now.wday == 0
+    effective = tagging._context_for_suffix(ctx, "A")
+    assert effective.now == ctx.shabbos
+
+
+def test_context_for_suffix_auto_on_chol_weekday_matches_shabbos():
+    ctx = _ctx(datetime(2024, 6, 19, 10, 0, 0))  # Wednesday, ordinary chol day
+    assert ctx.today_is_chol
+    effective = tagging._context_for_suffix(ctx, "A")
+    assert effective.now == ctx.shabbos
+
+
+def test_sunset_auto_context_matches_s_or_e_per_day_type():
+    chol_ctx = _ctx(datetime(2024, 6, 19, 10, 0, 0))
+    shabbos_ctx = _ctx(datetime(2024, 6, 22, 10, 0, 0))
+    erev_ctx = _ctx(datetime(2024, 6, 21, 10, 0, 0))
+
+    assert tagging.render_template("#SUNSET+0A", chol_ctx) == tagging.render_template("#SUNSET+0S", chol_ctx)
+    assert tagging.render_template("#SUNSET+0A", shabbos_ctx) == tagging.render_template("#SUNSET+0S", shabbos_ctx)
+    assert tagging.render_template("#SUNSET+0A", erev_ctx) == tagging.render_template("#SUNSET+0E", erev_ctx)
+
+
+def test_context_for_suffix_auto_on_non_friday_erev_yom_tov_matches_erev_shabbos():
+    # Erev Pesach 2024 (22 Apr 2024) falls on a MONDAY, not a Friday - "A"
+    # must resolve to the erev-shabbos context here too, since erev_shabbos
+    # isn't tied to wday==6 (zman_context.py derives it from
+    # is_candle_lighting, which also fires for several Yom Tov eves).
+    ctx = _ctx(datetime(2024, 4, 22, 10, 0, 0))
+    assert ctx.now.wday != 6
+    assert ctx.now == ctx.erev_shabbos
+    effective = tagging._context_for_suffix(ctx, "A")
+    assert effective.now == ctx.erev_shabbos
+    assert tagging.render_template("#SUNSET+0A", ctx) == tagging.render_template("#SUNSET+0E", ctx)
 
 
 def test_unknown_tag_left_untouched():
@@ -513,14 +635,14 @@ def test_cmd_tag_pattern_captures_args():
     assert len(matches) == 1
     assert matches[0].group(1) == "CMD"
     assert matches[0].group(2) is None
-    assert matches[0].group(3) == '-city "Beit Shemesh" -format json'
+    assert matches[0].group(4) == '-city "Beit Shemesh" -format json'
 
 
 def test_cmd_tag_pattern_with_no_args():
     matches = list(tagging.TAG_PATTERN.finditer("#CMD"))
     assert len(matches) == 1
     assert matches[0].group(1) == "CMD"
-    assert matches[0].group(3) is None
+    assert matches[0].group(4) is None
 
 
 def test_parse_shell_like_args_plain_whitespace():

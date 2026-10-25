@@ -213,7 +213,13 @@ install by testing `import <pkg>` from an unrelated directory.
 `#HEBDATE`, `#PARSHA`, `#DAFYOMI`, `#LIMUDYOMI`, `#DAYZMANIM`, `#FULLZMANIM`, `#ALOS72`,
 `#SUNRISE`, `#SHMAGRA`, `#SHMAMGA`, `#TFILAGRA`, `#TFILAMGA`, `#CHAZOT`, `#BGMINHA`, `#LTMINHA`,
 `#SUNSET`, `#TZAIS`, `#TZAISYESHIVA`, `#SHABBOS`, `#MOZASH`, `#DICLOCK`. Most accept an optional
-`+N`/`-N` (minutes) or `+HH:MM`/`-HH:MM` offset suffix, e.g. `#SUNSET-01:30`. `#CMD:<args>` runs a configured external
+`+N`/`-N` (minutes) or `+HH:MM`/`-HH:MM` offset suffix, e.g. `#SUNSET-01:30`, optionally followed
+by a single CONTEXT letter - `N` (now, default), `S` (upcoming Shabbos), `E` (Erev Shabbos), or `A`
+(auto - resolves to `E` on any erev-shabbos/candle-lighting day, not always a Friday, e.g. Erev
+Pesach; `S` every other day) - e.g. `#SUNSET-30E` (identical to
+`#SHABBOS-30`), `#SUNRISE+0S` (Shabbos-day sunrise, no offset), or `#SUNSET+0A` (auto-forecasts
+to whichever of Erev Shabbos/Shabbos is currently relevant, without the author needing to know
+which day it is in advance). `#CMD:<args>` runs a configured external
 command and substitutes its stdout (see `cmd_tag_executable` in `config.example.json`). Special
 non-text tags: `#ANCLOCK` (analog clock), `#CHOLONLY`/`#NONCHOLONLY`/`#HIDDEN`/`#CONFIG:{json}`
 (day-mode slide visibility + config overrides), `#MULTIMODE` (deprecated/inert, kept only for
