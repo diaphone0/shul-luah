@@ -687,7 +687,7 @@ class PresentationController:
         # are picked up by the very next content-refresh tick and, if a
         # non-clock #CMD value then changes, trigger a further export via
         # refresh_content's own change detection below.
-        self.export_pdfs()
+        self.export_published_outputs()
 
     def _apply_day_mode_visibility(self, today_is_chol: bool) -> None:
         """Shows/hides every #CHOLONLY/#NONCHOLONLY/#HIDDEN-tagged slide
@@ -775,7 +775,7 @@ class PresentationController:
         was_chol = self._last_today_is_chol
         self._last_today_is_chol = today_is_chol
         if was_chol is False and today_is_chol is True:
-            self.export_pdfs()
+            self.export_published_outputs()
 
     def _warm_up_slides(self) -> None:
         """Briefly switches the (off-screen, invisible) editing view's
@@ -908,6 +908,45 @@ class PresentationController:
         except Exception as exc:
             print(f"luah_signage: PDF export failed (skipped): {exc!r}")
             return []
+
+    def export_pngs(self) -> list:
+        """Exports the currently-loaded presentation to day-mode PNG
+        image(s) in the configured output directory - see
+        presentation_pdf.export_day_pngs for the "preview" vs "all_slides"
+        output shape (config.export_png_mode).
+
+        No-op (returns ``[]``) when config.export_png is False (off by
+        default, unlike export_pdf), when the document isn't loaded yet, or
+        if the UNO export raises for any reason (same best-effort,
+        never-crash-the-tick behavior as export_pdfs)."""
+        if not self.config.export_png:
+            return []
+        if self.document is None or not self._slides_by_index:
+            return []
+        try:
+            output_dir = presentation_pdf.resolve_output_dir(self.config, "export_png_dir")
+            written = presentation_pdf.export_day_pngs(
+                desktop=self.desktop,
+                document=self.document,
+                slides=self._slides_by_index,
+                slide_day_mode=self._slide_day_mode,
+                output_dir=output_dir,
+                mode=self.config.export_png_mode,
+            )
+            print("luah_signage: wrote " + ", ".join(str(p) for p in written))
+            return written
+        except Exception as exc:
+            print(f"luah_signage: PNG export failed (skipped): {exc!r}")
+            return []
+
+    def export_published_outputs(self) -> None:
+        """Runs every enabled static-publish export (PDFs, PNGs) - the single
+        call site every PDF-export trigger (load/reload, non-clock tag
+        change, non-chol->chol flip - see export_pdfs/export_pngs's own
+        docstrings) should use, so adding a future export format only needs
+        one new line here rather than touching every trigger site."""
+        self.export_pdfs()
+        self.export_pngs()
 
     # -- per-tick refresh ------------------------------------------------
     def refresh_clock(self, now: datetime, loop_time: float | None = None) -> None:
@@ -1077,15 +1116,15 @@ class PresentationController:
             finally:
                 if use_lock:
                     self.document.unlockControllers()
-            # Publish updated PDFs if a meaningful (non-clock) tag changed.
-            # Skipped on the very first refresh after a load/reload - that
-            # first render (raw "#TAG" -> computed values means every tag
-            # "changes" that call) is already followed by an explicit
-            # export_pdfs() call from _prepare_document, so firing here too
-            # would just duplicate that export (see
+            # Publish updated PDFs/PNGs if a meaningful (non-clock) tag
+            # changed. Skipped on the very first refresh after a load/reload
+            # - that first render (raw "#TAG" -> computed values means every
+            # tag "changes" that call) is already followed by an explicit
+            # export_published_outputs() call from _prepare_document, so
+            # firing here too would just duplicate that export (see
             # self._first_content_refresh's docstring in __init__).
             if non_clock_changed and not self._first_content_refresh:
-                self.export_pdfs()
+                self.export_published_outputs()
             self._first_content_refresh = False
         if self._slide_day_mode:
             self._apply_day_mode_visibility(ctx.today_is_chol)

@@ -139,6 +139,37 @@ def test_cmd_tag_global_args_as_json_list():
         assert config.cmd_tag_global_args == ["--sep", " - ", "--swap"]
 
 
+def test_export_pdf_defaults():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _write_config(Path(tmp))
+        config = load_config(path)
+        assert config.export_pdf is True
+        assert config.export_pdf_dir is None
+
+
+def test_export_png_defaults_to_off():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _write_config(Path(tmp))
+        config = load_config(path)
+        assert config.export_png is False
+        assert config.export_png_dir is None
+        assert config.export_png_mode == "preview"
+
+
+def test_export_png_overrides():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _write_config(
+            Path(tmp),
+            export_png=True,
+            export_png_dir="C:/png/out",
+            export_png_mode="all_slides",
+        )
+        config = load_config(path)
+        assert config.export_png is True
+        assert config.export_png_dir == "C:/png/out"
+        assert config.export_png_mode == "all_slides"
+
+
 def test_parse_config_override_valid_json():
     assert config_module.parse_config_override('{"cmd_tick_seconds": 60}') == {"cmd_tick_seconds": 60}
 

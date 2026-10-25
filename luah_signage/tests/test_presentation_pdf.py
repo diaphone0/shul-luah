@@ -1,18 +1,25 @@
 """
 Sanity tests for luah_signage.presentation_pdf's pure (no UNO dependency)
-helpers `slide_indices_for_day` and `to_page_range`. Run with:
-python tests/test_presentation_pdf.py (also pytest-compatible)
+helpers `slide_indices_for_day`, `to_page_range`, and `resolve_output_dir`.
+Run with: python tests/test_presentation_pdf.py (also pytest-compatible)
 
-Everything else in presentation_pdf.py (export_day_pdfs / _store_to_pdf)
-requires a live LibreOffice document and is not testable in this
-environment - see that module's docstring.
+Everything else in presentation_pdf.py (export_day_pdfs/export_day_pngs/
+_store_to_pdf/_store_page_to_png) requires a live LibreOffice document and
+is not testable in this environment - see that module's docstring.
 """
 from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from luah_signage.presentation_pdf import (
     DAY_MODE_CHOL_ONLY,
     DAY_MODE_NONCHOL_ONLY,
     DAY_MODE_ALWAYS_HIDDEN,
+    export_day_pngs,
+    resolve_output_dir,
     slide_indices_for_day,
     to_page_range,
 )
@@ -95,6 +102,37 @@ def test_day_modes_match_presentation_constants():
     assert DAY_MODE_CHOL_ONLY == pres.DAY_MODE_CHOL_ONLY
     assert DAY_MODE_NONCHOL_ONLY == pres.DAY_MODE_NONCHOL_ONLY
     assert DAY_MODE_ALWAYS_HIDDEN == pres.DAY_MODE_ALWAYS_HIDDEN
+
+
+def test_resolve_output_dir_defaults_to_export_pdf_dir_attr():
+    config = SimpleNamespace(export_pdf_dir="C:/some/dir")
+    assert resolve_output_dir(config) == Path("C:/some/dir")
+
+
+def test_resolve_output_dir_honors_given_attr_name():
+    config = SimpleNamespace(export_png_dir="C:/png/dir")
+    assert resolve_output_dir(config, "export_png_dir") == Path("C:/png/dir")
+
+
+def test_resolve_output_dir_falls_back_to_repo_root_when_unset():
+    from luah_signage.config import REPO_ROOT
+
+    config = SimpleNamespace(export_pdf_dir=None)
+    assert resolve_output_dir(config) == REPO_ROOT
+
+
+def test_export_day_pngs_rejects_invalid_mode():
+    # Validated before touching desktop/document/filesystem at all, so this
+    # is safe to call with None/empty placeholders in a UNO-less test.
+    with pytest.raises(ValueError):
+        export_day_pngs(
+            desktop=None,
+            document=None,
+            slides=[],
+            slide_day_mode={},
+            output_dir=Path("."),
+            mode="bogus",
+        )
 
 
 if __name__ == "__main__":

@@ -333,6 +333,23 @@ class LuahConfig:
     # the same directory as config.json (the repo root). Created if it
     # doesn't already exist.
     export_pdf_dir: str | None = None
+    # Same idea as export_pdf, but as PNG image(s) instead - see
+    # presentation_pdf.export_day_pngs. Off by default (unlike export_pdf)
+    # since most sites only need the PDFs; PNG export's output shape
+    # depends on export_png_mode below. Fires on the exact same events as
+    # export_pdf (load/reload, non-clock tag change, non-chol->chol flip).
+    export_png: bool = False
+    # Directory PNGs are written to - same default-resolution rule as
+    # export_pdf_dir (falls back to the repo root if unset).
+    export_png_dir: str | None = None
+    # "preview" (default): writes ONE png per day-mode (luah_weekday.png /
+    # luah_shabbos.png) containing just the FIRST slide of that day's deck
+    # - a quick visual preview, not the full deck (PNG, unlike PDF, can't
+    # hold multiple pages in one file). "all_slides": writes ONE numbered
+    # png PER SLIDE in that day's deck instead (luah_weekday_01.png,
+    # luah_weekday_02.png, ...), mirroring the PDF's full-deck content
+    # split across multiple image files.
+    export_png_mode: str = "preview"
 
 
 def _resolve_pptx_path(raw: str | None) -> Path:
@@ -403,6 +420,9 @@ def load_config(path: Path | None = None) -> LuahConfig:
         cmd_tick_seconds=data.get("cmd_tick_seconds", 300.0),
         export_pdf=data.get("export_pdf", True),
         export_pdf_dir=data.get("export_pdf_dir"),
+        export_png=data.get("export_png", False),
+        export_png_dir=data.get("export_png_dir"),
+        export_png_mode=data.get("export_png_mode", "preview"),
     )
 
 

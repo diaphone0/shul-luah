@@ -1,5 +1,6 @@
 """
-Export of the currently-loaded presentation to the two per-day-mode PDFs.
+Export of the currently-loaded presentation to the two per-day-mode PDFs
+(and, optionally, PNG image(s) - see ``export_day_pngs``).
 
 Why this exists: the signage deck is a single .pptx file whose slides are
 tagged #CHOLONLY / #NONCHOLONLY / #HIDDEN (see presentation.py's
@@ -14,7 +15,12 @@ people who can't watch the live slideshow:
 
 Slides tagged #HIDDEN, or #CONFIG (which presentation.py auto-hides, and
 therefore always lands in the DAY_MODE_ALWAYS_HIDDEN bucket), are never
-included in either PDF.
+included in either PDF (or PNG).
+
+PNG export (optional, off by default - see LuahConfig.export_png) reuses
+the exact same day-mode subset selection, but via a raster filter that can
+only ever hold ONE slide per file - see ``export_day_pngs``'s docstring for
+the "preview" vs "all_slides" output shape this implies.
 
 "Current slides (with modified elements)": the values already rendered into
 the LIVE in-memory Impress document (tagged text substituted, analog-clock
@@ -112,12 +118,13 @@ def to_page_range(indices: list[int]) -> str:
     return ",".join(parts)
 
 
-def resolve_output_dir(config) -> Path:
-    """Resolves the directory the PDFs are written to:
-    ``config.export_pdf_dir`` (a path string) if set, else the repo root
-    (the directory that holds config.json / launch.py). Imported lazily
-    to avoid an import cycle at module load time."""
-    raw = getattr(config, "export_pdf_dir", None)
+def resolve_output_dir(config, attr_name: str = "export_pdf_dir") -> Path:
+    """Resolves the directory a day-mode export is written to:
+    ``getattr(config, attr_name)`` (a path string, e.g. ``export_pdf_dir``
+    or ``export_png_dir``) if set, else the repo root (the directory that
+    holds config.json / launch.py). Imported lazily to avoid an import
+    cycle at module load time."""
+    raw = getattr(config, attr_name, None)
     if raw:
         return Path(raw)
 
@@ -298,6 +305,91 @@ def _store_to_pdf(document, out_path: Path, overwrite: bool) -> None:
     url = __import__("uno").systemPathToFileUrl(str(out_path.resolve()))
     props = (
         _prop("FilterName", "impress_pdf_Export"),
+        _prop("Overwrite", True),
+    )
+    document.storeToURL(url, props)
+
+
+def export_day_pngs(
+    desktop,
+    document,
+    slides,
+    slide_day_mode: dict,
+    output_dir: Path,
+    mode: str = "preview",
+    weekday_prefix: str = "luah_weekday",
+    shabbos_prefix: str = "luah_shabbos",
+    overwrite: bool = True,
+) -> list[Path]:
+    """Exports the CURRENTLY-LOADED UNO ``document`` to PNG image(s) per
+    day-mode, reusing the exact same subset selection as ``export_day_pdfs``
+    (see module docstring) - but via LibreOffice's raster
+    ``impress_png_Export`` filter, which, unlike the PDF filter, only ever
+    exports the document's CURRENT page, never a whole multi-slide deck in
+    one call. Two ``mode``s (see LuahConfig.export_png_mode's docstring):
+
+    - ``"preview"`` (default): writes ONE png per day
+      (``<prefix>.png``) containing just the FIRST slide of that day's
+      subset.
+    - ``"all_slides"``: writes ONE numbered png PER SLIDE in that day's
+      subset (``<prefix>_01.png``, ``<prefix>_02.png``, ...).
+
+    Reuses ``_build_subset_document`` (the same rendered-content-preserving,
+    forced-all-visible subset doc already used for the PDFs), so an exported
+    image shows exactly what that slide looks like in the PDF. Returns the
+    list of written paths."""
+    if mode not in ("preview", "all_slides"):
+        raise ValueError(f"export_png_mode must be 'preview' or 'all_slides', got {mode!r}")
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    weekday_indices = slide_indices_for_day(len(slides), slide_day_mode, non_chol=False)
+    shabbos_indices = slide_indices_for_day(len(slides), slide_day_mode, non_chol=True)
+
+    written: list[Path] = []
+    for include_indices, prefix in (
+        (weekday_indices, weekday_prefix),
+        (shabbos_indices, shabbos_prefix),
+    ):
+        subset = None
+        try:
+            subset = _build_subset_document(desktop, document, slides, set(include_indices))
+            pages = subset.DrawPages
+            page_positions = [0] if mode == "preview" else list(range(pages.Count))
+            for position in page_positions:
+                if position >= pages.Count:
+                    continue
+                suffix = "" if mode == "preview" else f"_{position + 1:02d}"
+                out_path = output_dir / f"{prefix}{suffix}.png"
+                _store_page_to_png(subset, pages.getByIndex(position), out_path, overwrite=overwrite)
+                written.append(out_path)
+        except Exception as exc:
+            print(f"luah_signage: {prefix} PNG export failed (skipped): {exc!r}")
+        finally:
+            if subset is not None:
+                try:
+                    subset.close(False)
+                except Exception:
+                    pass
+    return written
+
+
+def _store_page_to_png(document, page, out_path: Path, overwrite: bool) -> None:
+    """Exports a single Impress slide (``page``) to ``out_path`` as a PNG.
+    LibreOffice's ``impress_png_Export`` filter always exports only the
+    document's CURRENT page - unlike ``_store_to_pdf``, there is no
+    whole-document page-range concept for a raster filter - so ``page`` is
+    selected via the controller immediately before exporting. Raises on
+    export failures (the caller swallows/logs them - see
+    ``export_day_pngs``/PresentationController.export_pngs)."""
+    if overwrite and out_path.exists():
+        out_path.unlink()
+    document.CurrentController.setCurrentPage(page)
+
+    url = __import__("uno").systemPathToFileUrl(str(out_path.resolve()))
+    props = (
+        _prop("FilterName", "impress_png_Export"),
         _prop("Overwrite", True),
     )
     document.storeToURL(url, props)
