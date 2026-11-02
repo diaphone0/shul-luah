@@ -223,18 +223,36 @@ def test_context_for_suffix_none_or_n_returns_ctx_unchanged():
     assert tagging._context_for_suffix(ctx, "N") is ctx
 
 
-def test_context_for_suffix_s_swaps_now_for_shabbos():
-    ctx = _ctx(datetime(2024, 6, 21, 12, 0, 0))
+def test_context_for_suffix_s_swaps_now_for_shabbos_and_pins_time_to_8am_when_not_shabbos():
+    from dataclasses import replace
+
+    ctx = _ctx(datetime(2024, 6, 21, 21, 30, 15))  # Friday night 21:30:15 (not Saturday)
     effective = tagging._context_for_suffix(ctx, "S")
-    assert effective.now == ctx.shabbos
+    assert effective.now == replace(ctx.shabbos, hour=8, min=0, sec=0, msec=0)
     assert effective.shabbos == ctx.shabbos
     assert effective.erev_shabbos == ctx.erev_shabbos
 
 
-def test_context_for_suffix_e_swaps_now_for_erev_shabbos():
-    ctx = _ctx(datetime(2024, 6, 21, 12, 0, 0))
+def test_context_for_suffix_s_keeps_live_ticking_time_on_shabbos():
+    ctx = _ctx(datetime(2024, 6, 22, 14, 25, 40))  # Saturday 14:25:40
+    effective = tagging._context_for_suffix(ctx, "S")
+    assert effective.now == ctx.shabbos
+    assert (effective.now.hour, effective.now.min, effective.now.sec) == (14, 25, 40)
+
+
+def test_context_for_suffix_e_keeps_live_ticking_time_on_erev_shabbos():
+    ctx = _ctx(datetime(2024, 6, 21, 12, 34, 56))  # Friday 12:34:56
     effective = tagging._context_for_suffix(ctx, "E")
     assert effective.now == ctx.erev_shabbos
+    assert (effective.now.hour, effective.now.min, effective.now.sec) == (12, 34, 56)
+
+
+def test_context_for_suffix_e_pins_time_to_8am_when_not_erev_shabbos():
+    from dataclasses import replace
+
+    ctx = _ctx(datetime(2024, 6, 19, 22, 15, 0))  # Wednesday night 22:15:00
+    effective = tagging._context_for_suffix(ctx, "E")
+    assert effective.now == replace(ctx.erev_shabbos, hour=8, min=0, sec=0, msec=0)
 
 
 def test_sunset_minus30_erev_shabbos_context_matches_shabbos_tag():
@@ -284,11 +302,18 @@ def test_context_for_suffix_auto_on_shabbos_matches_shabbos():
     assert effective.now == ctx.shabbos
 
 
-def test_context_for_suffix_auto_on_chol_weekday_matches_shabbos():
-    ctx = _ctx(datetime(2024, 6, 19, 10, 0, 0))  # Wednesday, ordinary chol day
+def test_context_for_suffix_auto_on_chol_weekday_matches_shabbos_at_8am():
+    from dataclasses import replace
+
+    ctx = _ctx(datetime(2024, 6, 19, 22, 0, 0))  # Wednesday night, ordinary chol day
     assert ctx.today_is_chol
     effective = tagging._context_for_suffix(ctx, "A")
-    assert effective.now == ctx.shabbos
+    assert effective.now == replace(ctx.shabbos, hour=8, min=0, sec=0, msec=0)
+    # Also verify #HEBDATE+0S / #HEBDATE+0A / #HEBDATE+0E at night on a weekday
+    # do NOT include "אור ל-" because their time is pinned to 08:00 AM.
+    assert "אור ל-" not in tagging.render_template("#HEBDATE+0S", ctx)
+    assert "אור ל-" not in tagging.render_template("#HEBDATE+0A", ctx)
+    assert "אור ל-" not in tagging.render_template("#HEBDATE+0E", ctx)
 
 
 def test_sunset_auto_context_matches_s_or_e_per_day_type():
@@ -914,6 +939,16 @@ def test_refresh_cmd_cache_overwrites_previous_good_value_on_success():
     cache: dict[str, str] = {"": "stale old value"}
     tagging.refresh_cmd_cache(cache, cmd, {""})
     assert cache[""] == "fresh value"
+
+
+def test_refresh_cmd_cache_preserves_leading_tab_and_trailing_blank_alignment_line():
+    import sys
+
+    cmd = f'"{sys.executable}" -c "print(\'\\tleading tab\\n18:49\\n\')"'
+    cache: dict[str, str] = {}
+    tagging.refresh_cmd_cache(cache, cmd, {""})
+    assert cache[""] == "\tleading tab\n18:49\n"
+    assert len(cache[""].split("\n")) == 3
 
 
 def test_is_cmd_error_placeholder():

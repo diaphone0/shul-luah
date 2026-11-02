@@ -216,14 +216,27 @@ def _context_for_suffix(ctx: ZmanContext, context_letter: str | None) -> ZmanCon
     "S", since ``ctx.shabbos == ctx.now`` whenever today is already
     assur-be-melachah - see zman_context.py); on any Erev Shabbos/Yom Tov
     day it stays put too (same as "E", since ``ctx.erev_shabbos == ctx.now``
-    on that day by construction)."""
+    on that day by construction).
+
+    Whenever the selected target day (``ctx.shabbos`` or ``ctx.erev_shabbos``)
+    is NOT today (``target != ctx.now``), its time of day is pinned to
+    08:00:00 (8:00 AM) rather than inheriting ``ctx.now``'s live/mock wall
+    clock (which could be after tzais or before sunrise on another day and
+    cause time-of-day-sensitive renderers like ``#HEBDATE``'s ``hdate_or_format``
+    to treat the target day as evening/"אור ל-"). When today IS already that
+    target day (``target == ctx.now``), the live/mock ticking time is kept."""
     if context_letter == CONTEXT_SHABBOS:
-        return replace(ctx, now=ctx.shabbos)
-    if context_letter == CONTEXT_EREV_SHABBOS:
-        return replace(ctx, now=ctx.erev_shabbos)
-    if context_letter == CONTEXT_AUTO:
-        return replace(ctx, now=ctx.erev_shabbos if ctx.now == ctx.erev_shabbos else ctx.shabbos)
-    return ctx
+        target = ctx.shabbos
+    elif context_letter == CONTEXT_EREV_SHABBOS:
+        target = ctx.erev_shabbos
+    elif context_letter == CONTEXT_AUTO:
+        target = ctx.erev_shabbos if ctx.now == ctx.erev_shabbos else ctx.shabbos
+    else:
+        return ctx
+
+    if target != ctx.now:
+        target = replace(target, hour=8, min=0, sec=0, msec=0)
+    return replace(ctx, now=target)
 
 
 class TextShapeLike(Protocol):
@@ -382,7 +395,11 @@ def _run_cmd_tag(
         suffix = f": {stderr_preview}" if stderr_preview else ""
         return f"[#CMD: exit code {result.returncode}{suffix}]"
 
-    output = (result.stdout or "").strip()
+    # Strip only the single trailing newline added by print() / line-oriented
+    # CLI output, preserving any intentional leading/trailing tabs, spaces, or
+    # blank alignment lines (e.g. from get_prayer_times.py's --pad-with-tab or
+    # *_times continuation lines when the first/last row wraps).
+    output = (result.stdout or "").removesuffix("\r\n").removesuffix("\n")
     if len(output) > _MAX_CMD_OUTPUT_CHARS:
         output = output[:_MAX_CMD_OUTPUT_CHARS] + "\u2026(truncated)"
     return output
