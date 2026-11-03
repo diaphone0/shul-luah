@@ -257,7 +257,9 @@ def get_day_info(hd: HDate, *, show_limud: bool = True,
     primary_loc, primary_offset = location if location else CITIES[0][1:]
     sr = _round_time(hdate_gregorian(getsunrise(hd, primary_loc)))
     ss = _round_time(hdate_gregorian(getelevationsunset(hd, primary_loc)))
-    lines.append(f"זריחה: {sr.strftime('%H:%M')}  שקיעה: {ss.strftime('%H:%M')}")
+    #tzais using gettzais_eli_sefaradi
+    tzais = _round_time(hdate_gregorian(gettzais_eli_sefaradi(hd, primary_loc, True)))
+    lines.append(f"זריחה: {sr.strftime('%H:%M')}  שקיעה: {ss.strftime('%H:%M')}  צאת: {tzais.strftime('%H:%M')}")
 
     # 5. Candle lighting / havdalah times
     # When location is selected, only show times for that location
@@ -627,8 +629,8 @@ def test_molad():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    #print(get_mincha_time_for_upcoming_week(LOCATION_PRESETS["eli"][0], 15)) #dbg
-    #print(get_maariv_time_for_upcoming_week(LOCATION_PRESETS["eli"][0], 15)) #dbg
+    print(get_mincha_time_for_upcoming_week(LOCATION_PRESETS["eli"][0], 15)) #dbg
+    print(get_maariv_time_for_upcoming_week(LOCATION_PRESETS["eli"][0], 15)) #dbg
     #test_molad()
     #exit(0) #dbg
     import argparse
