@@ -313,6 +313,56 @@ def _normalize_global_args(global_args) -> list[str]:
     return [str(item) for item in global_args]
 
 
+def _extract_switch_name(token: str) -> str | None:
+    """If ``token`` is a CLI option switch (e.g. ``"-a"``, ``"--sep"``,
+    ``"-s=val"``, ``"--desc-width=9"``), returns its switch name
+    (the part before ``"="``, e.g. ``"-a"``, ``"--sep"``, ``"-s"``,
+    ``"--desc-width"``). Returns ``None`` for positional arguments or
+    non-switch values (such as empty strings, bare ``"-"``/``"--"``,
+    negative numbers like ``"-5"``, or strings with leading spaces like
+    ``" - "``)."""
+    if not token.startswith("-") or token in ("-", "--"):
+        return None
+    name = token.split("=", 1)[0]
+    if name in ("-", "--"):
+        return None
+    if not name.startswith("--") and (name[1].isdigit() or name[1].isspace()):
+        return None
+    return name
+
+
+def _merge_cmd_args(global_args: list[str], tag_args: list[str]) -> list[str]:
+    """Combines normalized ``global_args`` with parsed per-tag ``tag_args``
+    such that any option switch present in ``tag_args`` overrides (removes)
+    the corresponding switch in ``global_args`` - whether either side
+    writes the option as two tokens (``["--switch", "value"]``) or as a
+    single ``"--switch=value"`` / ``"-switch=value"`` token."""
+    overridden_switches = {
+        name for tok in tag_args if (name := _extract_switch_name(tok)) is not None
+    }
+    if not overridden_switches:
+        return global_args + tag_args
+
+    filtered_global: list[str] = []
+    i = 0
+    while i < len(global_args):
+        token = global_args[i]
+        switch_name = _extract_switch_name(token)
+        if switch_name is not None and switch_name in overridden_switches:
+            if (
+                "=" not in token
+                and i + 1 < len(global_args)
+                and _extract_switch_name(global_args[i + 1]) is None
+            ):
+                i += 2
+            else:
+                i += 1
+            continue
+        filtered_global.append(token)
+        i += 1
+    return filtered_global + tag_args
+
+
 def _run_cmd_tag(
     cmd_executable: str | None,
     raw_args: str | None,
@@ -361,7 +411,8 @@ def _run_cmd_tag(
     if not base_argv:
         return "[#CMD: cmd_tag_executable is empty]"
 
-    argv = base_argv + _normalize_global_args(global_args) + _parse_shell_like_args(raw_args or "")
+    argv = base_argv + _merge_cmd_args(_normalize_global_args(global_args), _parse_shell_like_args(raw_args or ""))
+    print(f"luah_signage: running #CMD: {subprocess.list2cmdline(argv)} (argv={argv})", flush=True)
     # Force the child process's own stdout/stderr text encoding to UTF-8
     # regardless of the OS console code page - without this, a Python (or
     # similar) script's own print() calls can be silently mis-encoded on

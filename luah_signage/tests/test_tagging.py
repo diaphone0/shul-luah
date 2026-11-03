@@ -957,6 +957,103 @@ def test_is_cmd_error_placeholder():
     assert not tagging._is_cmd_error_placeholder("")
 
 
+def test_run_cmd_tag_prints_running_command_to_console():
+    import contextlib
+    import io
+    import sys
+
+    cmd = f'"{sys.executable}" -c "print(\'ok\')"'
+    cache: dict[str, str] = {}
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        tagging.refresh_cmd_cache(
+            cache,
+            cmd,
+            {"chol_desc --max-desc-width 12"},
+            global_args=["--sep", " - "],
+        )
+    printed = buf.getvalue()
+    assert "luah_signage: running #CMD:" in printed
+    assert "'chol_desc', '--max-desc-width', '12'" in printed
+
+
+def test_merge_cmd_args_overrides_two_token_global_with_two_token_tag():
+    global_args = ["--sep", "\t", "--hide-empty-sep", "--desc-width", "9"]
+    tag_args = ["chol_desc", "--desc-width", "12"]
+    assert tagging._merge_cmd_args(global_args, tag_args) == [
+        "--sep",
+        "\t",
+        "--hide-empty-sep",
+        "chol_desc",
+        "--desc-width",
+        "12",
+    ]
+
+
+def test_merge_cmd_args_overrides_two_token_global_with_equals_tag():
+    global_args = ["--sep", "\t", "--hide-empty-sep", "--desc-width", "9"]
+    tag_args = ["chol_desc", "--desc-width=12"]
+    assert tagging._merge_cmd_args(global_args, tag_args) == [
+        "--sep",
+        "\t",
+        "--hide-empty-sep",
+        "chol_desc",
+        "--desc-width=12",
+    ]
+
+
+def test_merge_cmd_args_overrides_equals_global_with_two_token_tag():
+    global_args = ["--sep", "\t", "--hide-empty-sep", "-- pad-with-tab".replace(" ", ""), "--desc-width=9"]
+    tag_args = ["chol_desc", "--desc-width", "12"]
+    assert tagging._merge_cmd_args(global_args, tag_args) == [
+        "--sep",
+        "\t",
+        "--hide-empty-sep",
+        "--pad-with-tab",
+        "chol_desc",
+        "--desc-width",
+        "12",
+    ]
+
+
+def test_merge_cmd_args_overrides_equals_global_with_equals_tag_and_single_dash():
+    global_args = ["-s=\t", "--desc-width=9", "--swap"]
+    tag_args = ["chol", "-s= - ", "--desc-width=15"]
+    assert tagging._merge_cmd_args(global_args, tag_args) == [
+        "--swap",
+        "chol",
+        "-s= - ",
+        "--desc-width=15",
+    ]
+
+
+def test_merge_cmd_args_boolean_switch_override_does_not_eat_next_global_switch():
+    global_args = ["--hide-empty-sep", "--pad-with-tab", "--desc-width=9"]
+    tag_args = ["chol", "--hide-empty-sep"]
+    assert tagging._merge_cmd_args(global_args, tag_args) == [
+        "--pad-with-tab",
+        "--desc-width=9",
+        "chol",
+        "--hide-empty-sep",
+    ]
+
+
+def test_refresh_cmd_cache_tag_arg_overrides_global_arg_in_subprocess():
+    import sys
+
+    cmd = f'"{sys.executable}" -c "import sys; print(repr(sys.argv[1:]))"'
+    cache: dict[str, str] = {}
+    tagging.refresh_cmd_cache(
+        cache,
+        cmd,
+        {"chol_desc --desc-width 12"},
+        global_args=["--sep", "\t", "--hide-empty-sep", "--desc-width=9"],
+    )
+    assert cache["chol_desc --desc-width 12"] == repr(
+        ["--sep", "\t", "--hide-empty-sep", "chol_desc", "--desc-width", "12"]
+    )
+
+
 if __name__ == "__main__":
     import sys
     import traceback
