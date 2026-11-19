@@ -720,6 +720,7 @@ TAG_REGISTRY: dict[str, Callable[[ZmanContext, int], str]] = {
     "TEHILIM": lambda ctx, off: shiur.tehillim(ctx.now),
     "TANYA": lambda ctx, off: shiur.get_tanya(ctx.now),
     "DICLOCK": lambda ctx, off: hdate_gregorian(ctx.now).strftime("%H:%M"),
+    "ALOS": lambda ctx, off: _fmt_time(zmanim.getalos(ctx.now, ctx.location), off),
     "ALOS72": lambda ctx, off: _fmt_time(zmanim.getalos72(ctx.now, ctx.location), off),
     "SUNRISE": lambda ctx, off: _fmt_time(zmanim.getsunrise(ctx.now, ctx.location), off),
     "SHMAMGA": lambda ctx, off: _fmt_time(zmanim.getshmamga(ctx.now, ctx.location), off),

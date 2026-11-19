@@ -1054,6 +1054,15 @@ def test_refresh_cmd_cache_tag_arg_overrides_global_arg_in_subprocess():
     )
 
 
+def test_alos_tag_renders_16p1_degrees_and_differs_from_alos72_in_summer():
+    from pyzmanim import zmanim
+
+    ctx = _ctx(datetime(2026, 8, 14, 8, 0, 0))
+    expected = tagging._fmt_time(zmanim.getalos(ctx.now, ctx.location))
+    assert tagging.render_template("#ALOS", ctx) == expected
+    assert tagging.render_template("#ALOS", ctx) != tagging.render_template("#ALOS72", ctx)
+
+
 if __name__ == "__main__":
     import sys
     import traceback

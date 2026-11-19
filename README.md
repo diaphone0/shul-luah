@@ -210,7 +210,7 @@ install by testing `import <pkg>` from an unrelated directory.
 
 ## Supported hashtags (full list — see `tagging.py`'s `TAG_REGISTRY`)
 
-`#HEBDATE`, `#PARSHA`, `#DAFYOMI`, `#LIMUDYOMI`, `#DAYZMANIM`, `#FULLZMANIM`, `#ALOS72`,
+`#HEBDATE`, `#PARSHA`, `#DAFYOMI`, `#LIMUDYOMI`, `#DAYZMANIM`, `#FULLZMANIM`, `#ALOS`, `#ALOS72`,
 `#SUNRISE`, `#SHMAGRA`, `#SHMAMGA`, `#TFILAGRA`, `#TFILAMGA`, `#CHAZOT`, `#BGMINHA`, `#LTMINHA`,
 `#SUNSET`, `#TZAIS`, `#TZAISYESHIVA`, `#SHABBOS`, `#MOZASH`, `#DICLOCK`. Most accept an optional
 `+N`/`-N` (minutes) or `+HH:MM`/`-HH:MM` offset suffix, e.g. `#SUNSET-01:30`, optionally followed
