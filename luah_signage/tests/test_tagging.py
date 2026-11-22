@@ -129,7 +129,10 @@ def test_fmt_time_minute_ceil_default_truncates():
     from pyzmanim.hebrewcalendar import convert_date
 
     hd = convert_date(datetime(2024, 6, 21, 18, 30, 45))
-    assert tagging._fmt_time(hd) == "18:30"
+    assert tagging._fmt_time(hd, minute_round=False) == "18:30"
+    assert tagging._fmt_time(hd) == "18:31"
+    hd_below_30 = convert_date(datetime(2024, 6, 21, 18, 30, 29))
+    assert tagging._fmt_time(hd_below_30) == "18:30"
 
 
 def test_fmt_time_minute_ceil_rounds_up_at_2_seconds():
@@ -1058,7 +1061,7 @@ def test_alos_tag_renders_16p1_degrees_and_differs_from_alos72_in_summer():
     from pyzmanim import zmanim
 
     ctx = _ctx(datetime(2026, 8, 14, 8, 0, 0))
-    expected = tagging._fmt_time(zmanim.getalos(ctx.now, ctx.location))
+    expected = tagging._fmt_time(zmanim.getalos(ctx.now, ctx.location), 0, True)
     assert tagging.render_template("#ALOS", ctx) == expected
     assert tagging.render_template("#ALOS", ctx) != tagging.render_template("#ALOS72", ctx)
 

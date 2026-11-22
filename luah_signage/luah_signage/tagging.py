@@ -519,11 +519,13 @@ def refresh_cmd_cache(
         cache[key] = result
 
 
-def _fmt_time(hd, offset_minutes: int = 0, minute_ceil: bool = False) -> str:
+def _fmt_time(hd, offset_minutes: int = 0, minute_ceil: bool = False, minute_round: bool = True) -> str:
     dt = hdate_gregorian(hd)
     if offset_minutes:
         dt = dt + timedelta(minutes=offset_minutes)
     if minute_ceil and dt.second >= 2:
+        dt = dt.replace(second=0, microsecond=0) + timedelta(minutes=1)
+    elif minute_round and dt.second >= 30:
         dt = dt.replace(second=0, microsecond=0) + timedelta(minutes=1)
     return dt.strftime("%H:%M")
 
@@ -720,7 +722,7 @@ TAG_REGISTRY: dict[str, Callable[[ZmanContext, int], str]] = {
     "TEHILIM": lambda ctx, off: shiur.tehillim(ctx.now),
     "TANYA": lambda ctx, off: shiur.get_tanya(ctx.now),
     "DICLOCK": lambda ctx, off: hdate_gregorian(ctx.now).strftime("%H:%M"),
-    "ALOS": lambda ctx, off: _fmt_time(zmanim.getalos(ctx.now, ctx.location), off),
+    "ALOS": lambda ctx, off: _fmt_time(zmanim.getalos(ctx.now, ctx.location), off, True),
     "ALOS72": lambda ctx, off: _fmt_time(zmanim.getalos72(ctx.now, ctx.location), off),
     "SUNRISE": lambda ctx, off: _fmt_time(zmanim.getsunrise(ctx.now, ctx.location), off),
     "SHMAMGA": lambda ctx, off: _fmt_time(zmanim.getshmamga(ctx.now, ctx.location), off),
